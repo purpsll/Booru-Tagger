@@ -17,198 +17,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Apply Deep Match performance changes
+      - name: Apply performance patch
+        run: python .github/scripts/apply_deep_perf_patch.py
+
+      - name: Validate source
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          plugin_path = Path('plugins/DanbooruTagImporter/DanbooruTagImporter.py')
-          text = plugin_path.read_text(encoding='utf-8')
-
-          # Standard-library concurrency only; the plugin remains dependency-free.
-          if 'from concurrent.futures import ThreadPoolExecutor\n' not in text:
-              text = text.replace(
-                  'from datetime import datetime, timezone\n',
-                  'from concurrent.futures import ThreadPoolExecutor\nfrom datetime import datetime, timezone\n',
-                  1,
-              )
-
-          # Import the fixed Deep Match performance policy.
-          old_import = '    CREATE_SECONDARY_ARTIST_STUDIOS, DANBOORU_BASE, DANBOORU_IQDB_MIN_SCORE,\n'
-          new_import = '    CREATE_SECONDARY_ARTIST_STUDIOS, DANBOORU_BASE, DANBOORU_IQDB_MIN_SCORE,\n    DEEP_VISUAL_HTTP_RETRIES, DEEP_VISUAL_MAX_WORKERS, DEEP_VISUAL_TIMEOUT_SECONDS,\n'
-          if old_import in text:
-              text = text.replace(old_import, new_import, 1)
-          elif new_import not in text:
-              raise SystemExit('deep performance constants import anchor not found')
-
-          old_sauce_import = '    SAUCENAO_QUOTA_WINDOW_SECONDS, SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS,\n'
-          new_sauce_import = '    SAUCENAO_OUTAGE_COOLDOWN_SECONDS, SAUCENAO_QUOTA_WINDOW_SECONDS, SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS,\n'
-          if old_sauce_import in text:
-              text = text.replace(old_sauce_import, new_sauce_import, 1)
-          elif new_sauce_import not in text:
-              raise SystemExit('SauceNAO outage constant import anchor not found')
-
-          # Transient SauceNAO origin outages should disable only SauceNAO briefly,
-          # without sleeping the entire bulk job or hammering an unhealthy origin.
-          global_anchor = '_SAUCENAO_QUOTA_ANNOUNCED = False\n'
-          if '_SAUCENAO_OUTAGE_UNTIL = 0.0\n' not in text:
-              text = text.replace(global_anchor, global_anchor + '_SAUCENAO_OUTAGE_UNTIL = 0.0\n', 1)
-
-          old_disabled = '''def _saucenao_is_disabled() -> bool:\n    return _SAUCENAO_DAILY_EXHAUSTED\n'''
-          new_disabled = '''def _saucenao_is_disabled() -> bool:\n    global _SAUCENAO_OUTAGE_UNTIL, _SAUCENAO_DISABLED_REASON\n    if _SAUCENAO_DAILY_EXHAUSTED:\n        return True\n    now = time.monotonic()\n    if _SAUCENAO_OUTAGE_UNTIL > now:\n        return True\n    if _SAUCENAO_OUTAGE_UNTIL:\n        _SAUCENAO_OUTAGE_UNTIL = 0.0\n        if _SAUCENAO_DISABLED_REASON.startswith("temporary SauceNAO outage"):\n            _SAUCENAO_DISABLED_REASON = ""\n    return False\n\n\ndef _saucenao_note_outage(status_code: int) -> None:\n    global _SAUCENAO_OUTAGE_UNTIL, _SAUCENAO_DISABLED_REASON\n    cooldown = max(30.0, float(SAUCENAO_OUTAGE_COOLDOWN_SECONDS))\n    _SAUCENAO_OUTAGE_UNTIL = max(_SAUCENAO_OUTAGE_UNTIL, time.monotonic() + cooldown)\n    _SAUCENAO_DISABLED_REASON = (\n        f"temporary SauceNAO outage cooldown after HTTP {status_code} "\n        f"({cooldown:.0f}s)"\n    )\n    log(\n        "WARNING",\n        f"SauceNAO HTTP {status_code}; pausing SauceNAO lookups for {cooldown:.0f}s "\n        "while Deep Match continues with the other providers.",\n    )\n'''
-          if old_disabled in text:
-              text = text.replace(old_disabled, new_disabled, 1)
-          elif new_disabled not in text:
-              raise SystemExit('SauceNAO disabled helper did not match expected source')
-
-          # Visual searches are retry-later operations. Do not let one image spend
-          # minutes in inline retries; a transient failure keeps the image unresolved.
-          text = text.replace(
-              'with HTTP.urlopen(req, timeout=60) as resp:',
-              'with HTTP.urlopen(req, timeout=DEEP_VISUAL_TIMEOUT_SECONDS, retries=DEEP_VISUAL_HTTP_RETRIES) as resp:',
-          )
-          text = text.replace(
-              'with HTTP.urlopen(req, timeout=60, min_interval=0.0) as resp:',
-              'with HTTP.urlopen(req, timeout=DEEP_VISUAL_TIMEOUT_SECONDS, min_interval=0.0, retries=DEEP_VISUAL_HTTP_RETRIES) as resp:',
-          )
-
-          # Handle Cloudflare/origin 52x failures as a short provider-only cooldown.
-          old_sauce_http = '''        if exc.code == 429:\n            retry_after_raw = exc.headers.get("Retry-After") if exc.headers else None\n'''
-          new_sauce_http = '''        if exc.code in {520, 521, 522, 523, 524}:\n            _saucenao_note_outage(exc.code)\n            raise RuntimeError(\n                f"SauceNAO temporarily unavailable: HTTP {exc.code}"\n            ) from exc\n        if exc.code == 429:\n            retry_after_raw = exc.headers.get("Retry-After") if exc.headers else None\n'''
-          if old_sauce_http in text:
-              text = text.replace(old_sauce_http, new_sauce_http, 1)
-          elif new_sauce_http not in text:
-              raise SystemExit('SauceNAO HTTP error block did not match expected source')
-
-          # An Unresolved marker means Fast Scan already completed authoritatively.
-          # Deep Match should go straight to visual search instead of repeating the
-          # four MD5 lookups plus local pHash for every image.
-          status_anchor = '    had_imported_status = IMPORT_MARKER_TAG.casefold() in image_status_names\n\n'
-          skip_code = '''    skip_fast_stages = (\n        lookup_mode == "deep"\n        and not force_recheck\n        and UNRESOLVED_MARKER_TAG.casefold() in image_status_names\n    )\n\n'''
-          if skip_code not in text:
-              if status_anchor not in text:
-                  raise SystemExit('process_image status anchor not found')
-              text = text.replace(status_anchor, status_anchor + skip_code, 1)
-
-          fast_start_marker = '    # Authoritative exact hashes always win over perceptual reuse.\n'
-          fast_end_marker = '    # Fast pass deliberately stops before any image upload / reverse-image-search API.\n'
-          fast_start = text.find(fast_start_marker)
-          fast_end = text.find(fast_end_marker, fast_start)
-          if fast_start < 0 or fast_end < 0:
-              raise SystemExit('Fast-stage block markers not found')
-          fast_block = text[fast_start:fast_end]
-          if 'Fast MD5/pHash stages: skipped (already Unresolved)' not in fast_block:
-              indented = ''.join(('    ' + line if line.strip() else line) for line in fast_block.splitlines(keepends=True))
-              replacement = (
-                  '    if skip_fast_stages:\n'
-                  '        decision_details.append("Fast MD5/pHash stages: skipped (already Unresolved)")\n'
-                  '        _metric(metrics, "fast_stages_reused")\n'
-                  '    else:\n'
-                  + indented
-              )
-              text = text[:fast_start] + replacement + text[fast_end:]
-
-          # Replace the serial Deep Match section with concurrent provider searches.
-          deep_start_marker = '    image_payload: Optional[bytes] = None\n'
-          deep_end_marker = '    if post is None:\n        if review_candidate_score > 0:\n'
-          deep_start = text.find(deep_start_marker)
-          deep_end = text.find(deep_end_marker, deep_start)
-          if deep_start < 0 or deep_end < 0:
-              raise SystemExit('Deep visual block markers not found')
-
-          new_deep = '''    image_payload: Optional[bytes] = None\n\n    def get_image_payload() -> bytes:\n        nonlocal image_payload\n        if image_payload is None:\n            image_payload = stash.image_bytes(iid)\n        return image_payload\n\n    review_candidate_score = 0.0\n    review_candidate_url = ""\n    (\n        saucenao_auto_accept,\n        saucenao_review_min,\n        saucenao_accept_review,\n    ) = _saucenao_thresholds(settings)\n\n    if post is None:\n        iqdb_diag: Dict[str, Any] = {}\n        e621_iqdb_diag: Dict[str, Any] = {}\n        saucenao_diag: Dict[str, Any] = {}\n        visual_outcomes: Dict[str, LookupOutcome] = {}\n        visual_jobs: Dict[str, Tuple[str, str, Any]] = {}\n\n        run_danbooru_iqdb = bool(\n            ENABLE_DANBOORU and ENABLE_DANBOORU_IQDB and danbooru_login and danbooru_api_key\n        )\n        if ENABLE_DANBOORU and ENABLE_DANBOORU_IQDB and not run_danbooru_iqdb:\n            decision_details.append("Danbooru IQDB: skipped (credentials not configured)")\n        elif not (ENABLE_DANBOORU and ENABLE_DANBOORU_IQDB):\n            decision_details.append("Danbooru IQDB: disabled")\n\n        run_e621_iqdb = bool(ENABLE_E621 and ENABLE_E621_IQDB)\n        if run_e621_iqdb and _e621_iqdb_is_disabled():\n            visual_outcomes["e621"] = LookupOutcome(\n                "e621", "iqdb", LookupStatus.UNAVAILABLE, None,\n                "e621 IQDB disabled for this run after a rate-limit/challenge response",\n            )\n            run_e621_iqdb = False\n        elif not run_e621_iqdb:\n            decision_details.append("e621 IQDB: disabled")\n\n        run_saucenao = bool(ENABLE_SAUCENAO and saucenao_api_key)\n        if ENABLE_SAUCENAO and not saucenao_api_key:\n            decision_details.append("SauceNAO: skipped (API key not configured)")\n        elif not ENABLE_SAUCENAO:\n            decision_details.append("SauceNAO: disabled")\n        elif run_saucenao and _saucenao_is_disabled():\n            visual_outcomes["saucenao"] = LookupOutcome(\n                "SauceNAO", "visual", LookupStatus.UNAVAILABLE, None,\n                _SAUCENAO_DISABLED_REASON or "disabled for this run",\n            )\n            run_saucenao = False\n\n        if run_danbooru_iqdb or run_e621_iqdb or run_saucenao:\n            payload = get_image_payload()\n\n            if run_danbooru_iqdb:\n                minimum_score = max(0.0, min(100.0, float(DANBOORU_IQDB_MIN_SCORE)))\n                _metric(metrics, "iqdb_queries")\n                visual_jobs["danbooru"] = (\n                    "Danbooru", "iqdb",\n                    lambda: danbooru_iqdb(\n                        payload, danbooru_login, danbooru_api_key,\n                        minimum_score, diagnostics=iqdb_diag,\n                    ),\n                )\n\n            if run_e621_iqdb:\n                minimum_e621_score = max(0.0, min(100.0, float(E621_IQDB_MIN_SCORE)))\n                _metric(metrics, "e621_iqdb_queries")\n                visual_jobs["e621"] = (\n                    "e621", "iqdb",\n                    lambda: e621_iqdb(\n                        payload, e621_username, e621_api_key, minimum_e621_score,\n                        diagnostics=e621_iqdb_diag,\n                    ),\n                )\n\n            if run_saucenao:\n                minimum_similarity = (\n                    saucenao_review_min if saucenao_accept_review else saucenao_auto_accept\n                )\n                _metric(metrics, "saucenao_queries")\n                visual_jobs["saucenao"] = (\n                    "SauceNAO", "visual",\n                    lambda: saucenao_resolve(\n                        payload, saucenao_api_key, minimum_similarity,\n                        danbooru_login, danbooru_api_key,\n                        gelbooru_api_key, gelbooru_user_id,\n                        rule34_api_key, rule34_user_id,\n                        e621_username, e621_api_key,\n                        saucenao_requests_per_30_seconds,\n                        diagnostics=saucenao_diag,\n                    ),\n                )\n\n            if visual_jobs:\n                visual_started = time.monotonic()\n                workers = max(1, min(int(DEEP_VISUAL_MAX_WORKERS), len(visual_jobs)))\n                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="booru-deep") as pool:\n                    futures = {\n                        key: pool.submit(_attempt_lookup, provider, stage, fn)\n                        for key, (provider, stage, fn) in visual_jobs.items()\n                    }\n                    for key, future in futures.items():\n                        visual_outcomes[key] = future.result()\n                visual_elapsed = max(0.0, time.monotonic() - visual_started)\n                if metrics is not None:\n                    metrics["visual_search_seconds"] = round(\n                        float(metrics.get("visual_search_seconds", 0.0) or 0.0) + visual_elapsed, 3\n                    )\n                    metrics["visual_search_images"] = int(metrics.get("visual_search_images", 0) or 0) + 1\n\n        # Preserve the established result priority even though the independent\n        # provider requests execute concurrently: Danbooru IQDB, e621 IQDB, SauceNAO.\n        danbooru_outcome = visual_outcomes.get("danbooru")\n        if danbooru_outcome is not None:\n            outcomes.append(danbooru_outcome)\n            best_score = float(iqdb_diag.get("best_score", 0.0) or 0.0)\n            if danbooru_outcome.matched:\n                source, post, match_method = "danbooru", danbooru_outcome.value, "iqdb"\n                decision_details.append(\n                    f"Danbooru IQDB: match {post.get('_iqdb_score', best_score):.1f}%"\n                )\n            elif danbooru_outcome.status == LookupStatus.MISS:\n                decision_details.append(\n                    "Danbooru IQDB: no qualifying result"\n                    + (f" (best {best_score:.1f}%)" if best_score else "")\n                )\n            else:\n                decision_details.append(\n                    f"Danbooru IQDB: {danbooru_outcome.status.value}"\n                    + (f" ({danbooru_outcome.detail})" if danbooru_outcome.detail else "")\n                )\n                log("WARNING", f"Danbooru IQDB not authoritative: {danbooru_outcome.detail}")\n\n        e621_outcome = visual_outcomes.get("e621")\n        if e621_outcome is not None:\n            outcomes.append(e621_outcome)\n            best_score = float(e621_iqdb_diag.get("best_score", 0.0) or 0.0)\n            if e621_outcome.matched:\n                if post is None:\n                    source, post, match_method = "e621", e621_outcome.value, "e621_iqdb"\n                    decision_details.append(\n                        f"e621 IQDB: match {post.get('_e621_iqdb_score', best_score):.1f}%"\n                    )\n                else:\n                    decision_details.append(\n                        f"e621 IQDB: match {e621_outcome.value.get('_e621_iqdb_score', best_score):.1f}% "\n                        "(Danbooru IQDB retained by priority)"\n                    )\n            elif e621_outcome.status == LookupStatus.MISS:\n                decision_details.append(\n                    "e621 IQDB: no qualifying result"\n                    + (f" (best {best_score:.1f}%)" if best_score else "")\n                )\n            else:\n                decision_details.append(\n                    f"e621 IQDB: {e621_outcome.status.value}"\n                    + (f" ({e621_outcome.detail})" if e621_outcome.detail else "")\n                )\n                log("WARNING", f"e621 IQDB not authoritative: {e621_outcome.detail}")\n\n        saucenao_outcome = visual_outcomes.get("saucenao")\n        if saucenao_outcome is not None:\n            outcomes.append(saucenao_outcome)\n            best_similarity = float(saucenao_diag.get("best_similarity", 0.0) or 0.0)\n            best_supported_similarity = float(\n                saucenao_diag.get("best_supported_similarity", best_similarity) or 0.0\n            )\n            best_supported_url = str(saucenao_diag.get("best_supported_url") or "").strip()\n            if saucenao_outcome.matched:\n                sauce_source, sauce_post = saucenao_outcome.value\n                score = float(sauce_post.get("_saucenao_score", best_similarity) or 0.0)\n                confidence = _visual_confidence(\n                    score, saucenao_auto_accept, saucenao_review_min\n                )\n                if confidence == "REVIEW":\n                    _metric(metrics, "saucenao_review_band_matches")\n                if post is None:\n                    source, post, match_method = sauce_source, sauce_post, "saucenao"\n                    decision_details.append(f"SauceNAO: match {score:.1f}% ({confidence})")\n                else:\n                    decision_details.append(\n                        f"SauceNAO: match {score:.1f}% ({confidence}; higher-priority IQDB match retained)"\n                    )\n            elif saucenao_outcome.status == LookupStatus.MISS:\n                if 0 < best_supported_similarity < saucenao_review_min:\n                    _metric(metrics, "saucenao_below_threshold")\n                elif best_supported_similarity <= 0 < best_similarity:\n                    _metric(metrics, "saucenao_unsupported_results")\n                elif best_similarity <= 0:\n                    _metric(metrics, "saucenao_no_results")\n                if (\n                    post is None\n                    and not saucenao_accept_review\n                    and saucenao_review_min <= best_supported_similarity < saucenao_auto_accept\n                ):\n                    review_candidate_score = best_supported_similarity\n                    review_candidate_url = best_supported_url\n                    _metric(metrics, "saucenao_review_candidates")\n                    decision_details.append(\n                        f"SauceNAO: supported review candidate {best_supported_similarity:.1f}% "\n                        f"not auto-accepted (HIGH starts at {saucenao_auto_accept:.1f}%)"\n                    )\n                else:\n                    decision_details.append(\n                        "SauceNAO: no qualifying supported result"\n                        + (\n                            f" (best supported {best_supported_similarity:.1f}%)"\n                            if best_supported_similarity\n                            else (\n                                f" (best overall {best_similarity:.1f}%, unsupported)"\n                                if best_similarity else ""\n                            )\n                        )\n                    )\n            else:\n                decision_details.append(\n                    f"SauceNAO: {saucenao_outcome.status.value}"\n                    + (f" ({saucenao_outcome.detail})" if saucenao_outcome.detail else "")\n                )\n                log("WARNING", f"SauceNAO not authoritative: {saucenao_outcome.detail}")\n\n'''
-          text = text[:deep_start] + new_deep + text[deep_end:]
-          plugin_path.write_text(text, encoding='utf-8')
-
-          # Bump fixed policy/version.
-          constants_path = Path('plugins/DanbooruTagImporter/constants.py')
-          constants = constants_path.read_text(encoding='utf-8')
-          if 'VERSION = "3.26.3"' not in constants:
-              raise SystemExit('expected version 3.26.3 not found')
-          constants = constants.replace('VERSION = "3.26.3"', 'VERSION = "3.26.4"', 1)
-          perf_anchor = 'ENABLE_SAUCENAO = True\n'
-          perf_policy = (\n              'DEEP_VISUAL_TIMEOUT_SECONDS = 30.0\n'\n              'DEEP_VISUAL_HTTP_RETRIES = 0\n'\n              'DEEP_VISUAL_MAX_WORKERS = 3\n'\n          )
-          if 'DEEP_VISUAL_TIMEOUT_SECONDS' not in constants:
-              constants = constants.replace(perf_anchor, perf_anchor + perf_policy, 1)
-          sauce_anchor = 'SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS = 30.0\n'
-          if 'SAUCENAO_OUTAGE_COOLDOWN_SECONDS' not in constants:
-              constants = constants.replace(\n                  sauce_anchor, sauce_anchor + 'SAUCENAO_OUTAGE_COOLDOWN_SECONDS = 180.0\n', 1\n              )
-          constants_path.write_text(constants, encoding='utf-8')
-
-          # Cloudflare 52x statuses are transient and should preserve Retry Later semantics.
-          network_path = Path('plugins/DanbooruTagImporter/network.py')
-          network = network_path.read_text(encoding='utf-8')
-          network = network.replace(\n              'RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}',\n              'RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}',\n              1,\n          )
-          network_path.write_text(network, encoding='utf-8')
-
-          manifest_path = Path('plugins/DanbooruTagImporter/DanbooruTagImporter.yml')
-          manifest = manifest_path.read_text(encoding='utf-8')
-          manifest = manifest.replace('version: 3.26.3', 'version: 3.26.4', 1)
-          manifest = manifest.replace(\n              'description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. The first usable artist becomes the Studio and additional artists are retained as tags. Run Fast Scan first, then Deep Match unresolved images.',\n              'description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Fast Scan handles exact matches; Deep Match reuses that result and runs independent visual providers concurrently for much faster unresolved processing.',\n              1,\n          )
-          manifest_path.write_text(manifest, encoding='utf-8')
-
-          task_path = Path('plugins/DanbooruTagImporter/tests/test_task_menu.py')
-          task_text = task_path.read_text(encoding='utf-8')
-          task_text = task_text.replace('self.assertEqual(yaml_version, "3.26.3")', 'self.assertEqual(yaml_version, "3.26.4")', 1)
-          task_path.write_text(task_text, encoding='utf-8')
-
-          # Regression coverage for the performance policy.
-          safety_path = Path('plugins/DanbooruTagImporter/tests/test_plugin_safety.py')
-          tests = safety_path.read_text(encoding='utf-8')
-          marker = '    def test_conditional_dnp_artist_is_skipped_for_studio_selection(self):\n'
-          if marker not in tests:
-              raise SystemExit('safety test insertion marker not found')
-          test_name = 'test_unresolved_deep_skips_fast_md5_and_phash_stages'
-          if test_name not in tests:
-              addition = '''    def test_unresolved_deep_skips_fast_md5_and_phash_stages(self):\n        stash = ProcessFakeStash()\n        img = md5_image()\n        img["tags"] = [{"id": "u", "name": plugin.UNRESOLVED_MARKER_TAG}]\n        with mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \\\n             mock.patch.object(plugin, "ENABLE_E621_IQDB", False), \\\n             mock.patch.object(plugin, "ENABLE_SAUCENAO", False), \\\n             mock.patch.object(plugin, "danbooru_post") as danbooru_post, \\\n             mock.patch.object(plugin, "gelbooru_post") as gelbooru_post, \\\n             mock.patch.object(plugin, "rule34_post") as rule34_post, \\\n             mock.patch.object(plugin, "e621_post") as e621_post, \\\n             mock.patch.object(plugin, "_try_local_phash_reuse") as phash:\n            plugin.process_image(\n                stash, img, {}, {}, True, {}, {}, {}, {}, plugin.PHashIndex(),\n                lookup_mode="deep",\n            )\n        danbooru_post.assert_not_called()\n        gelbooru_post.assert_not_called()\n        rule34_post.assert_not_called()\n        e621_post.assert_not_called()\n        phash.assert_not_called()\n\n    def test_deep_visual_providers_execute_concurrently(self):\n        import threading\n        stash = ProcessFakeStash()\n        img = md5_image()\n        img["tags"] = [{"id": "u", "name": plugin.UNRESOLVED_MARKER_TAG}]\n        barrier = threading.Barrier(3, timeout=2.0)\n\n        def miss_together(*args, **kwargs):\n            barrier.wait()\n            return None\n\n        settings = {\n            "danbooru_login": "user",\n            "danbooru_api_key": "key",\n            "saucenao_api_key": "sauce",\n        }\n        with mock.patch.object(plugin, "danbooru_iqdb", side_effect=miss_together), \\\n             mock.patch.object(plugin, "e621_iqdb", side_effect=miss_together), \\\n             mock.patch.object(plugin, "saucenao_resolve", side_effect=miss_together):\n            result = plugin.process_image(\n                stash, img, settings, {}, True, {}, {}, {}, {}, plugin.PHashIndex(),\n                lookup_mode="deep",\n            )\n        self.assertEqual(result, "no_match")\n\n'''
-              tests = tests.replace(marker, addition + marker, 1)
-          safety_path.write_text(tests, encoding='utf-8')
-
-          network_test_path = Path('plugins/DanbooruTagImporter/tests/test_network.py')
-          network_tests = network_test_path.read_text(encoding='utf-8')
-          if 'test_cloudflare_521_is_retryable' not in network_tests:
-              insert = '''\n    def test_cloudflare_521_is_retryable(self):\n        exc = urllib.error.HTTPError("https://saucenao.com", 521, "down", {}, None)\n        self.assertTrue(network.is_retryable_exception(exc))\n'''
-              marker_net = '\n\nclass Rule34CooldownNetworkTests'
-              if marker_net not in network_tests:
-                  raise SystemExit('network test insertion marker not found')
-              network_tests = network_tests.replace(marker_net, insert + marker_net, 1)
-          network_test_path.write_text(network_tests, encoding='utf-8')
-
-          # Add timing counters to the run summary.
-          stats_anchor = '        "saucenao_review_band_matches": 0,\n'
-          if '"visual_search_seconds": 0.0,' not in text:
-              text = plugin_path.read_text(encoding='utf-8')
-              text = text.replace(\n                  stats_anchor,\n                  stats_anchor + '        "fast_stages_reused": 0,\n        "visual_search_images": 0,\n        "visual_search_seconds": 0.0,\n',\n                  1,\n              )
-              finalize_anchor = '    stats["images_per_minute"] = round((seen * 60.0) / elapsed, 2) if elapsed > 0 and seen else 0.0\n'
-              finalize_extra = '''    visual_images = int(stats.get("visual_search_images", 0) or 0)\n    visual_seconds = float(stats.get("visual_search_seconds", 0.0) or 0.0)\n    stats["average_visual_seconds_per_image"] = (\n        round(visual_seconds / visual_images, 2) if visual_images else 0.0\n    )\n'''
-              if finalize_extra not in text:
-                  text = text.replace(finalize_anchor, finalize_anchor + finalize_extra, 1)
-              plugin_path.write_text(text, encoding='utf-8')
-
-          readme_path = Path('plugins/DanbooruTagImporter/README.md')
-          readme = readme_path.read_text(encoding='utf-8')
-          readme = readme.replace('# Booru Importer v3.26.3', '# Booru Importer v3.26.4', 1)
-          goal_start = 'v3.26.3 expands the artist-exclusion policy:'
-          if goal_start in readme:
-              paragraph_start = readme.index(goal_start)
-              paragraph_end = readme.find('\n\n', paragraph_start)
-              old_para = readme[paragraph_start:paragraph_end]
-              new_para = ('v3.26.4 substantially improves Deep Match throughput. Images already marked Unresolved reuse the completed Fast Scan result instead of repeating MD5 and local pHash lookups. Danbooru IQDB, e621 IQDB, and SauceNAO execute concurrently while retaining the existing match-priority and confidence rules. Visual HTTP requests use a 30-second timeout with no inline retries so transient failures stay eligible for Retry Later instead of blocking one image for minutes. SauceNAO Cloudflare/origin 52x errors enter a short provider-only cooldown. Artist handling from v3.26.3 is unchanged.')
-              readme = readme.replace(old_para, new_para, 1)
-          readme_path.write_text(readme, encoding='utf-8')
-          PY
-
           git diff --check
+          PYTHONDONTWRITEBYTECODE=1 python -m py_compile plugins/DanbooruTagImporter/*.py
           PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
 
-      - name: Commit tested performance fix
+      - name: Commit tested fix and clean helpers
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "purpsll"
           git config user.email "105087296+purpsll@users.noreply.github.com"
           git add plugins/DanbooruTagImporter
+          git rm -f .github/workflows/apply-deep-performance-fix.yml
+          git rm -f .github/workflows/apply-deep-performance-fix-v2.yml || true
+          git rm -f .github/scripts/apply_deep_perf_patch.py
           git commit -m "Speed up unresolved Deep Match"
           git push origin HEAD:main
