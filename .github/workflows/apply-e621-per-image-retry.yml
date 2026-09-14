@@ -20,13 +20,25 @@ jobs:
           fetch-depth: 0
 
       - name: Apply patch
-        run: python tools/_apply_e621_per_image_retry_patch.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/_apply_e621_per_image_retry_patch.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('plugins/DanbooruTagImporter/DanbooruTagImporter.py')
+          text = path.read_text(encoding='utf-8')
+          old = '        started = float(stats.pop("_started_at_monotonic", time.monotonic()))\n'
+          new = '    started = float(stats.pop("_started_at_monotonic", time.monotonic()))\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one indentation repair target, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
 
       - name: Validate source and tests
         shell: bash
         run: |
           set -euo pipefail
-          nl -ba plugins/DanbooruTagImporter/DanbooruTagImporter.py | sed -n '3155,3185p'
           python -m py_compile plugins/DanbooruTagImporter/DanbooruTagImporter.py plugins/DanbooruTagImporter/network.py
           PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
 
