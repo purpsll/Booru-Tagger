@@ -43,7 +43,7 @@ from constants import (
     ENABLE_RULE34, ENABLE_SAUCENAO, ENTITY_SIMILARITY_MARGIN, EXCLUDED_EXTENSIONS,
     GELBOORU_BASE, HTTP_CIRCUIT_COOLDOWN_SECONDS, HTTP_CIRCUIT_FAILURE_THRESHOLD,
     HTTP_MAX_RETRIES, HTTP_RETRY_BACKOFF_SECONDS, IMPORT_MARKER_TAG, REVIEW_MARKER_TAG,
-    INCLUDE_META_TAGS, LOCAL_PHASH_MAX_DISTANCE, LOCAL_PHASH_MIN_MARGIN,
+    IGNORED_ARTIST_TAGS, INCLUDE_META_TAGS, LOCAL_PHASH_MAX_DISTANCE, LOCAL_PHASH_MIN_MARGIN,
     MAX_IMAGES_PER_RUN, MERGE_NORMALIZED_PERFORMERS, MERGE_NORMALIZED_STUDIOS,
     MERGE_SIMILAR_PERFORMERS, MERGE_SIMILAR_STUDIOS, MERGE_SIMILAR_TAGS,
     NO_MATCH_MARKER_TAG, STATUS_MARKER_TAGS, UNRESOLVED_MARKER_TAG, PERFORMER_SIMILARITY_THRESHOLD, PROVIDER_REQUEST_INTERVAL_MS,
@@ -2715,34 +2715,50 @@ def process_image(
         rule34_api_key, rule34_user_id,
     )
 
+    ignored_artist_keys = {
+        str(name).strip().casefold() for name in IGNORED_ARTIST_TAGS
+    }
+    usable_artists = [
+        artist for artist in artists
+        if str(artist).strip().casefold() not in ignored_artist_keys
+    ]
     studio_artists = (
-        [
-            artist for artist in artists
-            if str(artist).strip().casefold() != "conditional_dnp"
-        ]
-        if artist_mapping in {"studios", "both"}
-        else []
+        usable_artists if artist_mapping in {"studios", "both"} else []
     )
+
+    # Gelbooru/Rule34 start with one flat source tag list. If a value is known to
+    # be an ignored artist marker, remove it before any mapping policy can turn it
+    # back into an ordinary Stash tag.
+    if source in {"gelbooru", "rule34"} and artists:
+        ignored_source_artist_keys = {
+            str(artist).strip().casefold() for artist in artists
+            if str(artist).strip().casefold() in ignored_artist_keys
+        }
+        if ignored_source_artist_keys:
+            names = [
+                name for name in names
+                if str(name).strip().casefold() not in ignored_source_artist_keys
+            ]
 
     # Map structured categories according to user policy.
     if artist_mapping in {"tags", "both"}:
         existing_name_keys = {n.casefold() for n in names}
-        for artist in artists:
+        for artist in usable_artists:
             if artist.casefold() not in existing_name_keys:
                 names.append(artist)
                 existing_name_keys.add(artist.casefold())
     elif artist_mapping == "studios":
         if source in {"gelbooru", "rule34"} and artists:
-            # Gelbooru-style post payloads start as one flat tag list. Remove
-            # artist-category entries first, then add back only secondary real
-            # artists as ordinary tags. The first usable artist is the Studio.
+            # Artist-category entries are removed from the flat source tag list.
+            # The first usable artist becomes the Studio; later usable artists
+            # are re-added below as ordinary image tags.
             artist_keys = {a.casefold() for a in artists}
             names = [n for n in names if n.casefold() not in artist_keys]
 
-        # A Stash image has one Studio slot. Preserve every additional real
+        # A Stash image has one Studio slot. Preserve every additional usable
         # artist as an image tag instead of silently dropping that metadata.
         existing_name_keys = {n.casefold() for n in names}
-        for artist in studio_artists[1:]:
+        for artist in usable_artists[1:]:
             if artist.casefold() not in existing_name_keys:
                 names.append(artist)
                 existing_name_keys.add(artist.casefold())

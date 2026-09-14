@@ -1,7 +1,7 @@
 name: Booru Importer
 description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. The first usable artist becomes the Studio and additional artists are retained as tags. Run Fast Scan first, then Deep Match unresolved images.
-version: 3.26.2
-# Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp is ignored as artist metadata.
+version: 3.26.3
+# Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp and third-party_edit are ignored as artist metadata.
 exec:
   - python
   - "{pluginDir}/DanbooruTagImporter.py"

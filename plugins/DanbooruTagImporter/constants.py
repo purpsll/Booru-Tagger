@@ -4,7 +4,7 @@ Credentials / account identifiers plus the SauceNAO polling ceiling are user-con
 in Stash. Other operational presets live here so installations share the same policy.
 """
 
-VERSION = "3.26.2"
+VERSION = "3.26.3"
 PLUGIN_ID = "DanbooruTagImporter"
 USER_AGENT = f"stash-multibooru-tag-importer/{VERSION}"
 
@@ -55,6 +55,7 @@ INCLUDE_META_TAGS = False
 ARTIST_MAPPING = "studios"
 CHARACTER_MAPPING = "performers"
 CREATE_SECONDARY_ARTIST_STUDIOS = False
+IGNORED_ARTIST_TAGS = frozenset({"conditional_dnp", "third-party_edit"})
 MERGE_SIMILAR_TAGS = True
 SIMILAR_TAG_THRESHOLD = 96.0
 SIMILAR_TAG_MARGIN = 2.0
