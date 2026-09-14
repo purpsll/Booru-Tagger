@@ -121,7 +121,9 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.4** as an update.
+          For Stash's built-in **Installed Plugins → Update** feature, install Booru Importer from that source rather than by manually copying the GitHub Release ZIP. Source-installed packages retain the repository association Stash uses to discover updates. The internal package ID intentionally remains `DanbooruTagImporter` so updates replace the existing installation instead of creating a second plugin.
+
+          Existing source-based users should see **Booru Importer 3.26.4** as an update after refreshing plugin sources if needed.
 
           ### Manual installation from GitHub Releases
 
@@ -131,6 +133,8 @@ jobs:
           4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.
           5. In Stash, go to **Settings → Plugins** and reload plugins.
           6. Configure any optional provider credentials in the Booru Importer settings.
+
+          Manual ZIP installation remains supported as a fallback, but a manually copied plugin may not be associated with the plugin source for one-click updates. Install from the source URL once if you want future updates to appear through Stash's Installed Plugins page.
           EOF
 
       - name: Update initial public release notes
