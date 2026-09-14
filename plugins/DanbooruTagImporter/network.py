@@ -33,7 +33,7 @@ class HTTPClient:
     before the final urllib exception is surfaced to the caller.
     """
 
-    RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+    RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
     def __init__(self) -> None:
         self.default_min_interval = 0.25

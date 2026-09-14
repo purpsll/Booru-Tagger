@@ -80,10 +80,16 @@ class Stash:
         return payload.get("data") or {}
 
     def image_bytes(self, image_id: str) -> bytes:
-        """Read the existing Stash image in memory. No file is written."""
+        """Read Stash's 640px thumbnail for reverse-image search.
+
+        Stash generates/caches this representation locally. Sending the thumbnail
+        instead of the original full-resolution file dramatically reduces upload
+        time while preserving enough visual detail for IQDB/SauceNAO matching.
+        No duplicate source image is written by this plugin.
+        """
         headers = {k: v for k, v in self.headers.items() if k.lower() != "content-type"}
         req = urllib.request.Request(
-            f"{self.base_url}/image/{urllib.parse.quote(str(image_id))}/image",
+            f"{self.base_url}/image/{urllib.parse.quote(str(image_id))}/thumbnail",
             headers=headers,
             method="GET",
         )
@@ -92,7 +98,9 @@ class Stash:
                 return resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Stash image HTTP {exc.code}: {detail[:300]}") from exc
+            raise RuntimeError(
+                f"Stash thumbnail HTTP {exc.code}: {detail[:300]}"
+            ) from exc
 
     def settings(self) -> Dict[str, Any]:
         data = self.gql("query PluginConfig { configuration { plugins } }")

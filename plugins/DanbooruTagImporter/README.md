@@ -1,10 +1,10 @@
-# Booru Importer v3.26.3
+# Booru Importer v3.26.4
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.3 expands the artist-exclusion policy: `conditional_dnp` and `third-party_edit` are ignored when they appear as artist metadata. Neither marker can become the image Studio or be re-added as an ordinary tag. The first usable artist is assigned as the image Studio, while every additional usable artist is retained as an ordinary Stash tag. This release retains the matching thresholds, five-task workflow, and account-aware SauceNAO behavior from the previous public release.
+v3.26.4 substantially improves Deep Match throughput. Images already marked Unresolved reuse their completed Fast Scan result instead of repeating MD5 and local pHash lookups. Reverse-image searches upload Stash's generated 640px thumbnail instead of the original full-resolution image. After Danbooru IQDB misses, e621 IQDB and SauceNAO run concurrently, with a 30-second single-attempt timeout so temporary upload/network failures remain Retry Later instead of blocking one image for minutes. SauceNAO Cloudflare/origin 52x errors enter a short provider-only cooldown. Match thresholds and artist mapping behavior are unchanged.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.

@@ -27,6 +27,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -38,6 +39,7 @@ from network import HTTP, is_retryable_exception
 from constants import (
     ARTIST_MAPPING, AUTO_IMPORT_NEW_IMAGES, CHARACTER_MAPPING,
     CREATE_SECONDARY_ARTIST_STUDIOS, DANBOORU_BASE, DANBOORU_IQDB_MIN_SCORE,
+    DEEP_VISUAL_HTTP_RETRIES, DEEP_VISUAL_MAX_WORKERS, DEEP_VISUAL_TIMEOUT_SECONDS,
     E621_BASE, E621_IQDB_MIN_SCORE, ENABLE_DANBOORU, ENABLE_DANBOORU_IQDB,
     ENABLE_E621, ENABLE_E621_IQDB, ENABLE_GELBOORU, ENABLE_LOCAL_PHASH_REUSE,
     ENABLE_RULE34, ENABLE_SAUCENAO, ENTITY_SIMILARITY_MARGIN, EXCLUDED_EXTENSIONS,
@@ -49,7 +51,8 @@ from constants import (
     NO_MATCH_MARKER_TAG, STATUS_MARKER_TAGS, UNRESOLVED_MARKER_TAG, PERFORMER_SIMILARITY_THRESHOLD, PROVIDER_REQUEST_INTERVAL_MS,
     REQUEST_DELAY_MS, RULE34_BASE, RULE34_RATE_LIMIT_COOLDOWN_SECONDS, SAUCENAO_ACCEPT_REVIEW_BAND, SAUCENAO_BASE,
     SAUCENAO_DEFAULT_REQUESTS_PER_30_SECONDS, SAUCENAO_HIGH_CONFIDENCE,
-    SAUCENAO_QUOTA_WINDOW_SECONDS, SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS,
+    SAUCENAO_OUTAGE_COOLDOWN_SECONDS, SAUCENAO_QUOTA_WINDOW_SECONDS,
+    SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS,
     SAUCENAO_REVIEW_MINIMUM, SIMILAR_TAG_MARGIN, SIMILAR_TAG_THRESHOLD,
     STUDIO_SIMILARITY_THRESHOLD, USER_AGENT, VERBOSE_FAST_DECISION_LOGGING, VERSION,
 )
@@ -69,6 +72,7 @@ _SAUCENAO_LAST_REQUEST_AT = 0.0
 _SAUCENAO_PAUSE_UNTIL = 0.0
 _SAUCENAO_QUOTA_PAUSES = 0
 _SAUCENAO_QUOTA_ANNOUNCED = False
+_SAUCENAO_OUTAGE_UNTIL = 0.0
 _E621_IQDB_DISABLED_FOR_RUN = False
 _E621_IQDB_RATE_LIMIT_HITS = 0
 _RULE34_COOLDOWN_ANNOUNCED = False
@@ -241,7 +245,34 @@ def _saucenao_note_rate_limit(reason: str, retry_after: float = 0.0) -> None:
 
 
 def _saucenao_is_disabled() -> bool:
-    return _SAUCENAO_DAILY_EXHAUSTED
+    global _SAUCENAO_OUTAGE_UNTIL, _SAUCENAO_DISABLED_REASON
+    if _SAUCENAO_DAILY_EXHAUSTED:
+        return True
+    now = time.monotonic()
+    if _SAUCENAO_OUTAGE_UNTIL > now:
+        return True
+    if _SAUCENAO_OUTAGE_UNTIL:
+        _SAUCENAO_OUTAGE_UNTIL = 0.0
+        if _SAUCENAO_DISABLED_REASON.startswith("temporary SauceNAO outage"):
+            _SAUCENAO_DISABLED_REASON = ""
+    return False
+
+
+def _saucenao_note_outage(status_code: int) -> None:
+    global _SAUCENAO_OUTAGE_UNTIL, _SAUCENAO_DISABLED_REASON
+    cooldown = max(30.0, float(SAUCENAO_OUTAGE_COOLDOWN_SECONDS))
+    _SAUCENAO_OUTAGE_UNTIL = max(
+        _SAUCENAO_OUTAGE_UNTIL, time.monotonic() + cooldown
+    )
+    _SAUCENAO_DISABLED_REASON = (
+        f"temporary SauceNAO outage cooldown after HTTP {status_code} "
+        f"({cooldown:.0f}s)"
+    )
+    log(
+        "WARNING",
+        f"SauceNAO HTTP {status_code}; pausing SauceNAO lookups for {cooldown:.0f}s "
+        "while Deep Match continues with the other providers.",
+    )
 
 
 def _rule34_host() -> str:
@@ -504,7 +535,11 @@ def e621_iqdb(
     )
 
     try:
-        with HTTP.urlopen(req, timeout=60) as resp:
+        with HTTP.urlopen(
+            req,
+            timeout=DEEP_VISUAL_TIMEOUT_SECONDS,
+            retries=DEEP_VISUAL_HTTP_RETRIES,
+        ) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         global _E621_IQDB_RATE_LIMIT_HITS
@@ -678,11 +713,21 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
     body=b"".join(chunks)
     req=urllib.request.Request(SAUCENAO_BASE,data=body,method="POST",headers={"User-Agent":USER_AGENT,"Accept":"application/json","Content-Type":f"multipart/form-data; boundary={boundary}"})
     try:
-        with HTTP.urlopen(req, timeout=60, min_interval=0.0) as resp:
+        with HTTP.urlopen(
+            req,
+            timeout=DEEP_VISUAL_TIMEOUT_SECONDS,
+            min_interval=0.0,
+            retries=DEEP_VISUAL_HTTP_RETRIES,
+        ) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             payload=json.loads(raw)
     except urllib.error.HTTPError as exc:
         detail=exc.read().decode("utf-8",errors="replace")
+        if exc.code in {520, 521, 522, 523, 524}:
+            _saucenao_note_outage(exc.code)
+            raise RuntimeError(
+                f"SauceNAO temporarily unavailable: HTTP {exc.code}"
+            ) from exc
         if exc.code == 429:
             retry_after_raw = exc.headers.get("Retry-After") if exc.headers else None
             try:
@@ -964,7 +1009,11 @@ def danbooru_iqdb(image_bytes: bytes, login: str, api_key: str, minimum_score: f
         },
     )
     try:
-        with HTTP.urlopen(req, timeout=60) as resp:
+        with HTTP.urlopen(
+            req,
+            timeout=DEEP_VISUAL_TIMEOUT_SECONDS,
+            retries=DEEP_VISUAL_HTTP_RETRIES,
+        ) as resp:
             raw_response = resp.read().decode("utf-8")
             if debug_label is not None:
                 # Diagnostic only: log the first few IQDB API responses during
@@ -2299,6 +2348,12 @@ def process_image(
     image_status_names = _image_status_names(image)
     had_imported_status = IMPORT_MARKER_TAG.casefold() in image_status_names
 
+    skip_fast_stages = (
+        lookup_mode == "deep"
+        and not force_recheck
+        and UNRESOLVED_MARKER_TAG.casefold() in image_status_names
+    )
+
     if not force_recheck:
         if had_imported_status:
             return "skipped_imported"
@@ -2347,70 +2402,74 @@ def process_image(
     match_method = ""
     outcomes: List[LookupOutcome] = []
 
-    # Authoritative exact hashes always win over perceptual reuse.
-    exact_specs = []
-    if md5 and ENABLE_DANBOORU:
-        exact_specs.append(("Danbooru", "danbooru", lambda: danbooru_post(md5, danbooru_login, danbooru_api_key)))
-    if md5 and ENABLE_GELBOORU:
-        exact_specs.append(("Gelbooru", "gelbooru", lambda: gelbooru_post(md5, gelbooru_api_key, gelbooru_user_id)))
-    if md5 and ENABLE_RULE34:
-        if rule34_api_key and rule34_user_id:
-            exact_specs.append(("Rule34", "rule34", lambda: rule34_post(md5, rule34_api_key, rule34_user_id)))
-        else:
-            decision_details.append("Rule34 MD5: skipped (credentials not configured)")
-    if md5 and ENABLE_E621:
-        exact_specs.append(("e621", "e621", lambda: e621_post(md5, e621_username, e621_api_key)))
+    if skip_fast_stages:
+        decision_details.append("Fast MD5/pHash stages: skipped (already Unresolved)")
+        _metric(metrics, "fast_stages_reused")
+    else:
+        # Authoritative exact hashes always win over perceptual reuse.
+        exact_specs = []
+        if md5 and ENABLE_DANBOORU:
+            exact_specs.append(("Danbooru", "danbooru", lambda: danbooru_post(md5, danbooru_login, danbooru_api_key)))
+        if md5 and ENABLE_GELBOORU:
+            exact_specs.append(("Gelbooru", "gelbooru", lambda: gelbooru_post(md5, gelbooru_api_key, gelbooru_user_id)))
+        if md5 and ENABLE_RULE34:
+            if rule34_api_key and rule34_user_id:
+                exact_specs.append(("Rule34", "rule34", lambda: rule34_post(md5, rule34_api_key, rule34_user_id)))
+            else:
+                decision_details.append("Rule34 MD5: skipped (credentials not configured)")
+        if md5 and ENABLE_E621:
+            exact_specs.append(("e621", "e621", lambda: e621_post(md5, e621_username, e621_api_key)))
 
-    for provider_label, source_key, lookup_fn in exact_specs:
-        if provider_label == "Rule34":
-            _maybe_log_rule34_resumed()
+        for provider_label, source_key, lookup_fn in exact_specs:
+            if provider_label == "Rule34":
+                _maybe_log_rule34_resumed()
 
-        if source_disabled(provider_label):
-            outcome = LookupOutcome(
-                provider_label, "md5", LookupStatus.UNAVAILABLE, None,
-                _SOURCE_DISABLED.get(provider_label, "disabled for this run"),
+            if source_disabled(provider_label):
+                outcome = LookupOutcome(
+                    provider_label, "md5", LookupStatus.UNAVAILABLE, None,
+                    _SOURCE_DISABLED.get(provider_label, "disabled for this run"),
+                )
+            elif provider_label == "Rule34" and HTTP.cooldown_remaining(_rule34_host()) > 0:
+                remaining = HTTP.cooldown_remaining(_rule34_host())
+                outcome = LookupOutcome(
+                    provider_label, "md5", LookupStatus.RETRYABLE_ERROR, None,
+                    f"rate-limit cooldown active ({remaining:.0f}s remaining)",
+                )
+            else:
+                _metric(metrics, "md5_queries")
+                outcome = _attempt_lookup(provider_label, "md5", lookup_fn)
+            outcomes.append(outcome)
+            decision_details.append(
+                f"{provider_label} MD5: {outcome.status.value}"
+                + (f" ({outcome.detail})" if outcome.detail else "")
             )
-        elif provider_label == "Rule34" and HTTP.cooldown_remaining(_rule34_host()) > 0:
-            remaining = HTTP.cooldown_remaining(_rule34_host())
-            outcome = LookupOutcome(
-                provider_label, "md5", LookupStatus.RETRYABLE_ERROR, None,
-                f"rate-limit cooldown active ({remaining:.0f}s remaining)",
+            if outcome.matched:
+                source = source_key
+                post = outcome.value
+                match_method = "md5"
+                break
+            if outcome.status in {LookupStatus.RETRYABLE_ERROR, LookupStatus.UNAVAILABLE}:
+                if not _observe_rule34_problem(outcome, metrics):
+                    _log_lookup_problem_once(provider_label, str(outcome.detail or outcome.status.value))
+
+        if not md5:
+            decision_details.append("MD5: unavailable (image has no MD5 fingerprint)")
+
+        if post is None:
+            local_outcome = _try_local_phash_reuse(
+                image, phash_index,
+                danbooru_login=danbooru_login, danbooru_api_key=danbooru_api_key,
+                gelbooru_api_key=gelbooru_api_key, gelbooru_user_id=gelbooru_user_id,
+                rule34_api_key=rule34_api_key, rule34_user_id=rule34_user_id,
+                e621_username=e621_username, e621_api_key=e621_api_key,
+                metrics=metrics, decision_details=decision_details,
             )
-        else:
-            _metric(metrics, "md5_queries")
-            outcome = _attempt_lookup(provider_label, "md5", lookup_fn)
-        outcomes.append(outcome)
-        decision_details.append(
-            f"{provider_label} MD5: {outcome.status.value}"
-            + (f" ({outcome.detail})" if outcome.detail else "")
-        )
-        if outcome.matched:
-            source = source_key
-            post = outcome.value
-            match_method = "md5"
-            break
-        if outcome.status in {LookupStatus.RETRYABLE_ERROR, LookupStatus.UNAVAILABLE}:
-            if not _observe_rule34_problem(outcome, metrics):
-                _log_lookup_problem_once(provider_label, str(outcome.detail or outcome.status.value))
-
-    if not md5:
-        decision_details.append("MD5: unavailable (image has no MD5 fingerprint)")
-
-    if post is None:
-        local_outcome = _try_local_phash_reuse(
-            image, phash_index,
-            danbooru_login=danbooru_login, danbooru_api_key=danbooru_api_key,
-            gelbooru_api_key=gelbooru_api_key, gelbooru_user_id=gelbooru_user_id,
-            rule34_api_key=rule34_api_key, rule34_user_id=rule34_user_id,
-            e621_username=e621_username, e621_api_key=e621_api_key,
-            metrics=metrics, decision_details=decision_details,
-        )
-        outcomes.append(local_outcome)
-        if local_outcome.matched:
-            source, post = local_outcome.value
-            match_method = "local_phash"
-        elif local_outcome.status in {LookupStatus.RETRYABLE_ERROR, LookupStatus.UNAVAILABLE}:
-            _log_lookup_problem_once("Local pHash", str(local_outcome.detail or local_outcome.status.value))
+            outcomes.append(local_outcome)
+            if local_outcome.matched:
+                source, post = local_outcome.value
+                match_method = "local_phash"
+            elif local_outcome.status in {LookupStatus.RETRYABLE_ERROR, LookupStatus.UNAVAILABLE}:
+                _log_lookup_problem_once("Local pHash", str(local_outcome.detail or local_outcome.status.value))
 
     # Fast pass deliberately stops before any image upload / reverse-image-search API.
     if post is None and lookup_mode == "fast":
@@ -2497,48 +2556,6 @@ def process_image(
     elif post is None:
         decision_details.append("Danbooru IQDB: disabled")
 
-    if (
-        post is None
-        and ENABLE_E621
-        and ENABLE_E621_IQDB
-    ):
-        e621_iqdb_diag: Dict[str, Any] = {}
-        if _e621_iqdb_is_disabled():
-            outcome = LookupOutcome(
-                "e621", "iqdb", LookupStatus.UNAVAILABLE, None,
-                "e621 IQDB disabled for this run after a rate-limit/challenge response",
-            )
-        else:
-            minimum_score = max(0.0, min(100.0, float(E621_IQDB_MIN_SCORE)))
-            _metric(metrics, "e621_iqdb_queries")
-            outcome = _attempt_lookup(
-                "e621", "iqdb",
-                lambda: e621_iqdb(
-                    get_image_payload(), e621_username, e621_api_key, minimum_score,
-                    diagnostics=e621_iqdb_diag,
-                ),
-            )
-        outcomes.append(outcome)
-        best_score = float(e621_iqdb_diag.get("best_score", 0.0) or 0.0)
-        if outcome.matched:
-            source, post, match_method = "e621", outcome.value, "e621_iqdb"
-            decision_details.append(
-                f"e621 IQDB: match {post.get('_e621_iqdb_score', best_score):.1f}%"
-            )
-        elif outcome.status == LookupStatus.MISS:
-            decision_details.append(
-                f"e621 IQDB: no qualifying result"
-                + (f" (best {best_score:.1f}%)" if best_score else "")
-            )
-        else:
-            decision_details.append(
-                f"e621 IQDB: {outcome.status.value}"
-                + (f" ({outcome.detail})" if outcome.detail else "")
-            )
-            log("WARNING", f"e621 IQDB not authoritative: {outcome.detail}")
-    elif post is None:
-        decision_details.append("e621 IQDB: disabled")
-
     review_candidate_score = 0.0
     review_candidate_url = ""
     (
@@ -2547,82 +2564,214 @@ def process_image(
         saucenao_accept_review,
     ) = _saucenao_thresholds(settings)
 
-    if post is None and ENABLE_SAUCENAO and saucenao_api_key:
+    if post is None:
+        e621_iqdb_diag: Dict[str, Any] = {}
         saucenao_diag: Dict[str, Any] = {}
-        if _saucenao_is_disabled():
-            outcome = LookupOutcome(
+        visual_outcomes: Dict[str, LookupOutcome] = {}
+        visual_jobs: Dict[str, Tuple[str, str, Any]] = {}
+
+        run_e621_iqdb = bool(ENABLE_E621 and ENABLE_E621_IQDB)
+        if run_e621_iqdb and _e621_iqdb_is_disabled():
+            visual_outcomes["e621"] = LookupOutcome(
+                "e621", "iqdb", LookupStatus.UNAVAILABLE, None,
+                "e621 IQDB disabled for this run after a rate-limit/challenge response",
+            )
+            run_e621_iqdb = False
+        elif not run_e621_iqdb:
+            decision_details.append("e621 IQDB: disabled")
+
+        run_saucenao = bool(ENABLE_SAUCENAO and saucenao_api_key)
+        if ENABLE_SAUCENAO and not saucenao_api_key:
+            decision_details.append("SauceNAO: skipped (API key not configured)")
+        elif not ENABLE_SAUCENAO:
+            decision_details.append("SauceNAO: disabled")
+        elif run_saucenao and _saucenao_is_disabled():
+            visual_outcomes["saucenao"] = LookupOutcome(
                 "SauceNAO", "visual", LookupStatus.UNAVAILABLE, None,
                 _SAUCENAO_DISABLED_REASON or "disabled for this run",
             )
-        else:
-            minimum_similarity = (
-                saucenao_review_min if saucenao_accept_review else saucenao_auto_accept
+            run_saucenao = False
+
+        if run_e621_iqdb or run_saucenao:
+            payload = get_image_payload()
+            _metric(metrics, "visual_upload_bytes", len(payload))
+
+            if run_e621_iqdb:
+                minimum_e621_score = max(
+                    0.0, min(100.0, float(E621_IQDB_MIN_SCORE))
+                )
+                _metric(metrics, "e621_iqdb_queries")
+                visual_jobs["e621"] = (
+                    "e621",
+                    "iqdb",
+                    lambda: e621_iqdb(
+                        payload,
+                        e621_username,
+                        e621_api_key,
+                        minimum_e621_score,
+                        diagnostics=e621_iqdb_diag,
+                    ),
+                )
+
+            if run_saucenao:
+                minimum_similarity = (
+                    saucenao_review_min
+                    if saucenao_accept_review
+                    else saucenao_auto_accept
+                )
+                _metric(metrics, "saucenao_queries")
+                visual_jobs["saucenao"] = (
+                    "SauceNAO",
+                    "visual",
+                    lambda: saucenao_resolve(
+                        payload,
+                        saucenao_api_key,
+                        minimum_similarity,
+                        danbooru_login,
+                        danbooru_api_key,
+                        gelbooru_api_key,
+                        gelbooru_user_id,
+                        rule34_api_key,
+                        rule34_user_id,
+                        e621_username,
+                        e621_api_key,
+                        saucenao_requests_per_30_seconds,
+                        diagnostics=saucenao_diag,
+                    ),
+                )
+
+            visual_started = time.monotonic()
+            workers = max(
+                1, min(int(DEEP_VISUAL_MAX_WORKERS), len(visual_jobs))
             )
-            _metric(metrics, "saucenao_queries")
-            outcome = _attempt_lookup(
-                "SauceNAO", "visual",
-                lambda: saucenao_resolve(
-                    get_image_payload(), saucenao_api_key, minimum_similarity,
-                    danbooru_login, danbooru_api_key,
-                    gelbooru_api_key, gelbooru_user_id,
-                    rule34_api_key, rule34_user_id,
-                    e621_username, e621_api_key,
-                    saucenao_requests_per_30_seconds,
-                    diagnostics=saucenao_diag,
-                ),
-            )
-        outcomes.append(outcome)
-        best_similarity = float(saucenao_diag.get("best_similarity", 0.0) or 0.0)
-        best_supported_similarity = float(
-            saucenao_diag.get("best_supported_similarity", best_similarity) or 0.0
-        )
-        best_supported_url = str(saucenao_diag.get("best_supported_url") or "").strip()
-        if outcome.matched:
-            source, post = outcome.value
-            match_method = "saucenao"
-            score = float(post.get("_saucenao_score", best_similarity) or 0.0)
-            confidence = _visual_confidence(
-                score, saucenao_auto_accept, saucenao_review_min
-            )
-            if confidence == "REVIEW":
-                _metric(metrics, "saucenao_review_band_matches")
-            decision_details.append(
-                f"SauceNAO: match {score:.1f}% ({confidence})"
-            )
-        elif outcome.status == LookupStatus.MISS:
-            if 0 < best_supported_similarity < saucenao_review_min:
-                _metric(metrics, "saucenao_below_threshold")
-            elif best_supported_similarity <= 0 < best_similarity:
-                _metric(metrics, "saucenao_unsupported_results")
-            elif best_similarity <= 0:
-                _metric(metrics, "saucenao_no_results")
-            if (
-                not saucenao_accept_review
-                and saucenao_review_min <= best_supported_similarity < saucenao_auto_accept
-            ):
-                review_candidate_score = best_supported_similarity
-                review_candidate_url = best_supported_url
-                _metric(metrics, "saucenao_review_candidates")
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="booru-deep"
+            ) as pool:
+                futures = {
+                    key: pool.submit(_attempt_lookup, provider, stage, fn)
+                    for key, (provider, stage, fn) in visual_jobs.items()
+                }
+                for key, future in futures.items():
+                    visual_outcomes[key] = future.result()
+            visual_elapsed = max(0.0, time.monotonic() - visual_started)
+            if metrics is not None:
+                metrics["visual_search_seconds"] = round(
+                    float(metrics.get("visual_search_seconds", 0.0) or 0.0)
+                    + visual_elapsed,
+                    3,
+                )
+                metrics["visual_search_images"] = (
+                    int(metrics.get("visual_search_images", 0) or 0) + 1
+                )
+
+        e621_outcome = visual_outcomes.get("e621")
+        if e621_outcome is not None:
+            outcomes.append(e621_outcome)
+            best_score = float(e621_iqdb_diag.get("best_score", 0.0) or 0.0)
+            if e621_outcome.matched:
+                source, post, match_method = (
+                    "e621", e621_outcome.value, "e621_iqdb"
+                )
                 decision_details.append(
-                    f"SauceNAO: supported review candidate {best_supported_similarity:.1f}% "
-                    f"not auto-accepted (HIGH starts at {saucenao_auto_accept:.1f}%)"
+                    f"e621 IQDB: match "
+                    f"{post.get('_e621_iqdb_score', best_score):.1f}%"
+                )
+            elif e621_outcome.status == LookupStatus.MISS:
+                decision_details.append(
+                    "e621 IQDB: no qualifying result"
+                    + (f" (best {best_score:.1f}%)" if best_score else "")
                 )
             else:
-                best_note = best_supported_similarity or best_similarity
                 decision_details.append(
-                    "SauceNAO: no qualifying supported result"
-                    + (f" (best supported {best_supported_similarity:.1f}%)" if best_supported_similarity else (f" (best overall {best_similarity:.1f}%, unsupported)" if best_similarity else ""))
+                    f"e621 IQDB: {e621_outcome.status.value}"
+                    + (f" ({e621_outcome.detail})" if e621_outcome.detail else "")
                 )
-        else:
-            decision_details.append(
-                f"SauceNAO: {outcome.status.value}"
-                + (f" ({outcome.detail})" if outcome.detail else "")
+                log(
+                    "WARNING",
+                    f"e621 IQDB not authoritative: {e621_outcome.detail}",
+                )
+
+        saucenao_outcome = visual_outcomes.get("saucenao")
+        if saucenao_outcome is not None:
+            outcomes.append(saucenao_outcome)
+            best_similarity = float(
+                saucenao_diag.get("best_similarity", 0.0) or 0.0
             )
-            log("WARNING", f"SauceNAO not authoritative: {outcome.detail}")
-    elif post is None and ENABLE_SAUCENAO:
-        decision_details.append("SauceNAO: skipped (API key not configured)")
-    elif post is None:
-        decision_details.append("SauceNAO: disabled")
+            best_supported_similarity = float(
+                saucenao_diag.get("best_supported_similarity", best_similarity)
+                or 0.0
+            )
+            best_supported_url = str(
+                saucenao_diag.get("best_supported_url") or ""
+            ).strip()
+            if saucenao_outcome.matched:
+                sauce_source, sauce_post = saucenao_outcome.value
+                score = float(
+                    sauce_post.get("_saucenao_score", best_similarity) or 0.0
+                )
+                confidence = _visual_confidence(
+                    score, saucenao_auto_accept, saucenao_review_min
+                )
+                if confidence == "REVIEW":
+                    _metric(metrics, "saucenao_review_band_matches")
+                if post is None:
+                    source, post, match_method = (
+                        sauce_source, sauce_post, "saucenao"
+                    )
+                    decision_details.append(
+                        f"SauceNAO: match {score:.1f}% ({confidence})"
+                    )
+                else:
+                    decision_details.append(
+                        f"SauceNAO: match {score:.1f}% ({confidence}; "
+                        "e621 IQDB retained by priority)"
+                    )
+            elif saucenao_outcome.status == LookupStatus.MISS:
+                if 0 < best_supported_similarity < saucenao_review_min:
+                    _metric(metrics, "saucenao_below_threshold")
+                elif best_supported_similarity <= 0 < best_similarity:
+                    _metric(metrics, "saucenao_unsupported_results")
+                elif best_similarity <= 0:
+                    _metric(metrics, "saucenao_no_results")
+                if (
+                    post is None
+                    and not saucenao_accept_review
+                    and saucenao_review_min
+                    <= best_supported_similarity
+                    < saucenao_auto_accept
+                ):
+                    review_candidate_score = best_supported_similarity
+                    review_candidate_url = best_supported_url
+                    _metric(metrics, "saucenao_review_candidates")
+                    decision_details.append(
+                        f"SauceNAO: supported review candidate "
+                        f"{best_supported_similarity:.1f}% not auto-accepted "
+                        f"(HIGH starts at {saucenao_auto_accept:.1f}%)"
+                    )
+                else:
+                    decision_details.append(
+                        "SauceNAO: no qualifying supported result"
+                        + (
+                            f" (best supported {best_supported_similarity:.1f}%)"
+                            if best_supported_similarity
+                            else (
+                                f" (best overall {best_similarity:.1f}%, unsupported)"
+                                if best_similarity else ""
+                            )
+                        )
+                    )
+            else:
+                decision_details.append(
+                    f"SauceNAO: {saucenao_outcome.status.value}"
+                    + (
+                        f" ({saucenao_outcome.detail})"
+                        if saucenao_outcome.detail else ""
+                    )
+                )
+                log(
+                    "WARNING",
+                    f"SauceNAO not authoritative: {saucenao_outcome.detail}",
+                )
 
     if post is None:
         if review_candidate_score > 0:
@@ -3033,6 +3182,16 @@ def _finalize_stats(stats: Dict[str, Any]) -> Dict[str, Any]:
     seen = int(stats.get("seen", 0) or 0)
     stats["average_seconds_per_image"] = round(elapsed / seen, 2) if seen else 0.0
     stats["images_per_minute"] = round((seen * 60.0) / elapsed, 2) if elapsed > 0 and seen else 0.0
+    visual_images = int(stats.get("visual_search_images", 0) or 0)
+    visual_seconds = float(stats.get("visual_search_seconds", 0.0) or 0.0)
+    upload_bytes = int(stats.get("visual_upload_bytes", 0) or 0)
+    stats["average_visual_seconds_per_image"] = (
+        round(visual_seconds / visual_images, 2) if visual_images else 0.0
+    )
+    stats["average_visual_upload_kb"] = (
+        round((upload_bytes / 1024.0) / visual_images, 1)
+        if visual_images else 0.0
+    )
     progress(1.0)
     return stats
 
@@ -3082,6 +3241,7 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
     global _SAUCENAO_ACCOUNT_TYPE, _SAUCENAO_SHORT_LIMIT, _SAUCENAO_SHORT_REMAINING
     global _SAUCENAO_LONG_LIMIT, _SAUCENAO_LONG_REMAINING, _SAUCENAO_LAST_REQUEST_AT
     global _SAUCENAO_PAUSE_UNTIL, _SAUCENAO_QUOTA_PAUSES, _SAUCENAO_QUOTA_ANNOUNCED
+    global _SAUCENAO_OUTAGE_UNTIL
 
     _E621_IQDB_DISABLED_FOR_RUN = False
     _E621_IQDB_RATE_LIMIT_HITS = 0
@@ -3097,6 +3257,7 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
     _SAUCENAO_PAUSE_UNTIL = 0.0
     _SAUCENAO_QUOTA_PAUSES = 0
     _SAUCENAO_QUOTA_ANNOUNCED = False
+    _SAUCENAO_OUTAGE_UNTIL = 0.0
     _RULE34_COOLDOWN_ANNOUNCED = False
     _PROVIDER_WARNING_ONCE.clear()
     _SOURCE_DISABLED.clear()
@@ -3188,6 +3349,10 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
         "saucenao_no_results": 0,
         "saucenao_review_candidates": 0,
         "saucenao_review_band_matches": 0,
+        "fast_stages_reused": 0,
+        "visual_search_images": 0,
+        "visual_search_seconds": 0.0,
+        "visual_upload_bytes": 0,
     }
 
     target_marker_name: Optional[str] = None

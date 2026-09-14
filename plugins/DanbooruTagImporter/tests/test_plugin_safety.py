@@ -542,12 +542,12 @@ class PluginSafetyTests(unittest.TestCase):
             raise urllib.error.HTTPError("https://x", 429, "rate", {}, None)
         with mock.patch.object(plugin, "ENABLE_GELBOORU", False), \
              mock.patch.object(plugin, "ENABLE_RULE34", False), \
-             mock.patch.object(plugin, "ENABLE_E621", False), \
+             mock.patch.object(plugin, "ENABLE_E621", True), \
              mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \
-             mock.patch.object(plugin, "ENABLE_E621_IQDB", False), \
+             mock.patch.object(plugin, "ENABLE_E621_IQDB", True), \
              mock.patch.object(plugin, "ENABLE_SAUCENAO", False), \
              mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \
-             mock.patch.object(plugin, "danbooru_post", side_effect=rate_limited):
+             mock.patch.object(plugin, "e621_iqdb", side_effect=rate_limited):
             result = plugin.process_image(
                 stash, image_obj, {}, {}, False, {}, {}, {}, {}, plugin.PHashIndex(),
                 lookup_mode="deep",

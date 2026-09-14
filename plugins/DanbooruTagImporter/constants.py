@@ -4,7 +4,7 @@ Credentials / account identifiers plus the SauceNAO polling ceiling are user-con
 in Stash. Other operational presets live here so installations share the same policy.
 """
 
-VERSION = "3.26.3"
+VERSION = "3.26.4"
 PLUGIN_ID = "DanbooruTagImporter"
 USER_AGENT = f"stash-multibooru-tag-importer/{VERSION}"
 
@@ -38,6 +38,11 @@ DANBOORU_IQDB_MIN_SCORE = 95.0
 ENABLE_E621_IQDB = True
 E621_IQDB_MIN_SCORE = 90.0
 ENABLE_SAUCENAO = True
+# Deep visual-search requests upload a Stash-generated 640px thumbnail.
+# Do not retry an expensive image upload inline; transient failures stay Retry Later.
+DEEP_VISUAL_TIMEOUT_SECONDS = 30.0
+DEEP_VISUAL_HTTP_RETRIES = 0
+DEEP_VISUAL_MAX_WORKERS = 2
 SAUCENAO_HIGH_CONFIDENCE = 95.0
 SAUCENAO_REVIEW_MINIMUM = 90.0
 # REVIEW-band results are deliberately review-only. This prevents a stale Stash
@@ -49,6 +54,7 @@ SAUCENAO_ACCEPT_REVIEW_BAND = False
 SAUCENAO_DEFAULT_REQUESTS_PER_30_SECONDS = 0.0
 SAUCENAO_QUOTA_WINDOW_SECONDS = 30.0
 SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS = 30.0
+SAUCENAO_OUTAGE_COOLDOWN_SECONDS = 180.0
 
 # Metadata policy.
 INCLUDE_META_TAGS = False
