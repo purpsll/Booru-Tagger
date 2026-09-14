@@ -20,6 +20,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+
       - name: Build release package
         shell: bash
         run: |
@@ -66,7 +72,7 @@ jobs:
           - Fast Scan uses exact MD5 lookups and trusted local pHash reuse before slower searches.
           - Deep Match can use Danbooru IQDB, e621 IQDB, and SauceNAO for unresolved images.
           - Imports booru tags and source URLs and fills a missing source date when available.
-          - Maps booru **characters to Stash Performers** and **artists to Stash Studios**.
+          - Maps booru characters to Stash Performers and artists to Stash Studio metadata.
           - Uses conservative fuzzy matching to reuse similar existing Studios, Performers, and tags instead of creating obvious duplicates.
           - SauceNAO request pacing can be configured and automatically adapts to account-reported limits, including paid/upgraded accounts.
           - Existing ordinary Stash metadata is preserved; the plugin does not replace or download source image files.
@@ -82,32 +88,24 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.1
+          ## Booru Importer v3.26.2
 
-          This patch release is based on the tested 3.26.0 public release and contains the Studio-selection fix added after publication.
+          This patch release fixes multi-artist metadata handling so artist information is not lost when a source post credits more than one artist.
 
           ### Fixed
 
-          - `conditional_dnp` is now treated as a placeholder artist and **will never be selected or created as a Stash Studio**.
-          - If `conditional_dnp` appears first in an artist list, Booru Importer skips it and selects the **next real artist in the original order** as the Studio.
-          - The comparison is case-insensitive and ignores surrounding whitespace.
-          - Added a regression test that recreates a Gelbooru result containing `conditional_dnp` followed by a real artist and verifies the real artist becomes the Studio.
+          - The **first usable artist** continues to become the image's Stash Studio.
+          - **Every additional usable artist is now preserved as a normal Stash tag** instead of being dropped.
+          - The policy works with Danbooru/e621 structured artist metadata and Gelbooru/Rule34 flat tag lists.
+          - `conditional_dnp` remains excluded from artist metadata: it cannot become the Studio and is not added as a secondary-artist tag.
+          - If `conditional_dnp` appears before real artists, the first real artist becomes the Studio and later real artists become tags.
+          - Added a regression test covering `conditional_dnp`, a primary artist, multiple secondary artists, and a normal tag in the same Gelbooru result.
 
-          ### Validation and release cleanup
+          ### Validation
 
-          - Full regression suite passes with **70 tests**.
-          - Removed generated Python `__pycache__` / `.pyc` files from the public repository.
-          - Added `.gitignore` rules so generated Python and test-cache files are not included in future releases.
+          - Full regression suite passes with **71 tests**.
+          - Existing matching thresholds, five-task workflow, rate-limit handling, SauceNAO account-aware pacing, and metadata-preservation behavior remain unchanged.
           - The downloadable release ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.
-
-          ### Existing behavior retained
-
-          - Danbooru, Gelbooru, Rule34, and e621 metadata matching.
-          - Fast Scan and Deep Match workflow.
-          - Tags, source URL, source date, character → Performer, and artist → Studio mapping.
-          - Configurable/account-aware SauceNAO pacing.
-          - Conservative duplicate matching for Studios, Performers, and tags.
-          - Existing Stash metadata is preserved.
 
           ### Recommended installation / update
 
@@ -115,11 +113,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.1** as an update.
+          Existing source-based users should see **Booru Importer 3.26.2** as an update.
 
           ### Manual installation from GitHub Releases
 
-          1. Under **Assets**, download **`Booru-Importer-v3.26.1.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
+          1. Under **Assets**, download **`Booru-Importer-v3.26.2.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
           2. Extract the ZIP. It contains a top-level **`DanbooruTagImporter`** folder.
           3. Copy that entire folder into your Stash plugins directory.
           4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.
