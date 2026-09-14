@@ -86,32 +86,33 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.5
+          ## Booru Importer v3.26.6
 
-          This patch release changes e621 IQDB rate-limit handling so one failed image never disables e621 IQDB for the rest of a Deep Match queue.
+          This patch release adds provider-aware e621 pacing so Deep Match stays below e621's published request limits while preserving per-image retries.
 
-          ### e621 IQDB reliability
+          ### e621 IQDB rate-limit handling
 
-          - **Every image gets its own e621 IQDB attempt.** HTTP 429, Cloudflare challenge, timeout, or other transient failure affects only the current image.
-          - **No run-wide e621 IQDB disable.** The next image retries e621 IQDB normally.
-          - **Circuit isolation.** The e621 host's failure/circuit state is cleared before each IQDB image request while normal host pacing is preserved.
-          - **No inline upload retries.** A failing e621 IQDB request still uses the bounded single-attempt visual-search policy, so one image cannot stall the queue for minutes.
-          - **Cleaner logs.** Repeated identical e621 provider warnings are de-duplicated. Images left Retry Later only because of e621 IQDB are logged at INFO while the first provider warning remains visible.
-          - **Conservative state handling remains.** A transient e621 IQDB failure never becomes a false permanent No Match.
+          - **Every image remains eligible for e621 IQDB.** A 429, Cloudflare challenge, timeout, or other transient failure affects only the current image and never disables e621 for the rest of the queue.
+          - **Authenticated IQDB uploads are paced at least 2 seconds apart.** This stays conservatively below e621's current heavy file-search allowance.
+          - **Anonymous IQDB uploads are paced at least 65 seconds apart.** This respects the much stricter anonymous file-search allowance.
+          - **Ordinary e621 API traffic is paced to at most 1 request per second.**
+          - **Adaptive 429 backoff.** `Retry-After` is honored when present; otherwise repeated 429/Cloudflare responses progressively back off the next e621 IQDB attempt, capped at 60 seconds.
+          - **No same-image upload retries.** A failed visual upload remains Retry Later so one image cannot stall the queue for minutes.
+          - **Conservative state handling remains.** A transient e621 failure never becomes a false permanent No Match.
 
           ### Behavior retained
 
-          - Deep Match still reuses completed Fast Scan work for normal Unresolved images.
-          - Reverse-search uploads still use Stash's generated 640px thumbnail.
+          - Deep Match skips completed Fast Scan MD5/pHash work for normal Unresolved images.
+          - Reverse-search uploads use Stash's generated 640px thumbnail instead of the full-resolution original.
           - Danbooru IQDB remains first; e621 IQDB and SauceNAO may run concurrently after a Danbooru miss.
-          - Existing automatic-match and Review thresholds are unchanged.
+          - Automatic-match and Review thresholds are unchanged.
           - `conditional_dnp` and `third-party_edit` remain ignored as artist metadata.
-          - Source-installed users retain the stable internal package ID `DanbooruTagImporter` for Stash's **Installed Plugins → Update** flow.
+          - The stable internal package ID remains `DanbooruTagImporter` for Stash's **Installed Plugins → Update** flow.
 
           ### Validation
 
-          - Full regression suite passes with **81 tests**.
-          - Dedicated tests verify e621 per-image retry, warning de-duplication, and host-circuit reset while preserving pacing.
+          - Full regression suite passes with **84 tests**.
+          - Dedicated tests cover authenticated pacing, anonymous pacing, `Retry-After`, per-image e621 retry, warning de-duplication, and host-circuit reset behavior.
           - The release workflow validates the complete suite again before packaging.
 
           ### Recommended installation / update
@@ -120,11 +121,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.5** as an update after refreshing plugin sources if needed.
+          Existing source-based users should see **Booru Importer 3.26.6** as an update after refreshing plugin sources if needed.
 
           ### Manual installation from GitHub Releases
 
-          Download **`Booru-Importer-v3.26.5.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.6.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
           EOF
 
       - name: Update initial public release notes
