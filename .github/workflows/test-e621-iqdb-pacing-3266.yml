@@ -44,9 +44,9 @@ jobs:
           git diff --check
           chmod +x build_site.sh
           ./build_site.sh
-          grep -q 'id: DanbooruTagImporter' _site/main/index.yml
-          grep -q 'version: 3.26.6-' _site/main/index.yml
-          test -f _site/main/DanbooruTagImporter.zip
+          grep -q 'id: DanbooruTagImporter' _site/index.yml
+          grep -q 'version: 3.26.6-' _site/index.yml
+          test -f _site/DanbooruTagImporter.zip
 
       - name: Commit tested changes to validation branch
         shell: bash
