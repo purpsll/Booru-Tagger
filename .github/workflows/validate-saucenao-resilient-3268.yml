@@ -1,0 +1,59 @@
+name: Validate SauceNAO resilient fallback 3.26.8
+
+on:
+  push:
+    branches:
+      - test/saucenao-resilient-fallback-3268
+    paths:
+      - '.github/workflows/validate-saucenao-resilient-3268.yml'
+      - 'tools/apply_saucenao_resilient_3268.py'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Apply guarded patch
+        run: python tools/apply_saucenao_resilient_3268.py
+
+      - name: Compile source
+        run: python -m py_compile plugins/DanbooruTagImporter/*.py
+
+      - name: Run regression suite
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+
+      - name: Validate source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -qx 'version: 3.26.8' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
+          grep -qx 'VERSION = "3.26.8"' plugins/DanbooruTagImporter/constants.py
+          grep -q 'SAUCENAO_OUTAGE_BACKOFF_SECONDS = 5.0' plugins/DanbooruTagImporter/constants.py
+          grep -q 'SAUCENAO_OUTAGE_MAX_BACKOFF_SECONDS = 20.0' plugins/DanbooruTagImporter/constants.py
+          grep -q 'keeping SauceNAO enabled' plugins/DanbooruTagImporter/DanbooruTagImporter.py
+          git diff --check
+          chmod +x build_site.sh
+          ./build_site.sh
+          grep -q 'id: DanbooruTagImporter' _site/index.yml
+          grep -q 'version: 3.26.8-' _site/index.yml
+          test -f _site/DanbooruTagImporter.zip
+
+      - name: Commit tested changes to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md plugins/DanbooruTagImporter
+          git diff --cached --check
+          git commit -m 'Keep SauceNAO active through transient outages'
+          git push origin HEAD:test/saucenao-resilient-fallback-3268
