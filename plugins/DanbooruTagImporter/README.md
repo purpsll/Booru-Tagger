@@ -154,7 +154,15 @@ Normalized and fuzzy entity matching are conservative and require a clear winner
 
 ## Installation
 
-Place the plugin directory in Stash's plugin directory, then use **Settings -> Plugins -> Reload Plugins**, or install it through a compatible Stash plugin source when published there.
+For normal installation and future one-click updates, add this plugin source in **Stash → Settings → Plugins**:
+
+```text
+https://purpsll.github.io/Booru-Tagger/main/index.yml
+```
+
+Install **Booru Importer** from that source. Source-installed packages retain the repository association Stash uses for **Installed Plugins → Update**. The stable internal plugin ID is intentionally kept as `DanbooruTagImporter`; changing that ID would break update continuity and could make Stash treat a release as a different plugin.
+
+Manual installation is still supported by copying the `DanbooruTagImporter` directory into Stash's plugin directory and using **Settings → Plugins → Reload Plugins**, but a manually copied install may not be associated with the source repository for one-click updates.
 
 For manual installation, the directory should contain at least:
 

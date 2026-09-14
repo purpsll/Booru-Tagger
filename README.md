@@ -38,7 +38,13 @@ https://purpsll.github.io/Booru-Tagger/main/index.yml
 
 Refresh the available plugins, then install **Booru Importer**.
 
-When a newer version is published, refresh the plugin source in Stash and install the available update.
+### Built-in Stash updates
+
+To use Stash's **Installed Plugins → Update** feature, install Booru Importer through the plugin source URL above. A source-installed package keeps the repository association Stash uses to discover newer published packages. The plugin's internal ID intentionally remains **`DanbooruTagImporter`**, so a newer package updates the existing installation instead of appearing as a second plugin.
+
+When a newer package is published, refresh plugin sources if needed, then open **Installed Plugins** and use **Update** for Booru Importer.
+
+Manual GitHub Release ZIP installs remain supported as a fallback, but a manually copied plugin may not have a plugin-source association for one-click updates. If you originally installed manually and want future built-in updates, install Booru Importer from the source URL once.
 
 The exact button names may vary slightly between Stash versions.
 
