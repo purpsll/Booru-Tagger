@@ -8,6 +8,7 @@ on:
       - '.github/workflows/validate-saucenao-resilient-3268.yml'
       - 'tools/apply_saucenao_resilient_3268.py'
       - 'tools/fix_saucenao_resilient_helper.py'
+      - 'tools/update_saucenao_resilience_regressions.py'
 
 permissions:
   contents: write
@@ -27,6 +28,7 @@ jobs:
           set -euo pipefail
           python tools/fix_saucenao_resilient_helper.py
           python tools/apply_saucenao_resilient_3268.py
+          python tools/update_saucenao_resilience_regressions.py
 
       - name: Compile source
         run: python -m py_compile plugins/DanbooruTagImporter/*.py
