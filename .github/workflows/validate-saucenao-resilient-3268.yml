@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/validate-saucenao-resilient-3268.yml'
       - 'tools/apply_saucenao_resilient_3268.py'
+      - 'tools/fix_saucenao_resilient_helper.py'
 
 permissions:
   contents: write
@@ -21,7 +22,11 @@ jobs:
           fetch-depth: 0
 
       - name: Apply guarded patch
-        run: python tools/apply_saucenao_resilient_3268.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/fix_saucenao_resilient_helper.py
+          python tools/apply_saucenao_resilient_3268.py
 
       - name: Compile source
         run: python -m py_compile plugins/DanbooruTagImporter/*.py
