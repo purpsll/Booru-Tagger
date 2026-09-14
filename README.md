@@ -51,7 +51,7 @@ Use this method if you would rather download a ZIP yourself.
 3. Under **Assets**, download the file named like:
 
    ```text
-   Booru-Importer-v3.26.2.zip
+   Booru-Importer-v3.26.3.zip
    ```
 
    Future releases will use the same naming pattern with a newer version number.
@@ -177,7 +177,7 @@ For example:
 - Source characters are matched to or created as Performers.
 - The **first usable source artist** is matched to or created as the image Studio.
 - If the source lists more than one usable artist, **every additional artist is preserved as a normal Stash tag** so that artist information is not lost.
-- The placeholder artist name **`conditional_dnp` is ignored as artist metadata**. It is not selected as the Studio and is not added as a secondary-artist tag; the next real artist is used as the Studio.
+- Known artist markers **`conditional_dnp` and `third-party_edit` are ignored completely when they appear as artist metadata**. Neither can become the Studio or be added back as a secondary-artist tag; the next usable artist is selected instead.
 - A source Studio is assigned only when the image does not already have one.
 - A source date is added only when the image does not already have a date.
 - The source post URL is added without intentionally removing your existing URLs.
