@@ -1,6 +1,6 @@
 name: Booru Importer
 description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Run the fast scan first, then Deep Match unresolved images. Review and No-Match queues can be retried separately.
-version: 3.26.0
+version: 3.26.1
 exec:
   - python
   - "{pluginDir}/DanbooruTagImporter.py"

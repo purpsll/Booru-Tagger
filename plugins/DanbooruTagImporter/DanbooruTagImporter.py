@@ -2740,7 +2740,14 @@ def process_image(
         names = [n for n in names if n.casefold() not in character_keys]
 
     performers = characters if character_mapping in {"performers", "both"} else []
-    studio_artists = artists if artist_mapping in {"studios", "both"} else []
+    studio_artists = (
+        [
+            artist for artist in artists
+            if str(artist).strip().casefold() != "conditional_dnp"
+        ]
+        if artist_mapping in {"studios", "both"}
+        else []
+    )
     studio_targets = (
         studio_artists if create_secondary_artist_studios else studio_artists[:1]
     )

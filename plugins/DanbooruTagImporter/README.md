@@ -4,7 +4,7 @@ A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, an
 
 ## Release goals
 
-v3.26.0 keeps the public-release hardening from v3.24.0 and adds account-aware SauceNAO throughput. It intentionally does not change the established matching thresholds or five-task workflow.
+v3.26.1 adds a Studio-selection guard for the booru placeholder artist `conditional_dnp`. When it appears in an artist list, it is ignored for Studio assignment and the next real artist is selected. This release retains the public-release hardening and account-aware SauceNAO throughput introduced in v3.26.0, without changing the established matching thresholds or five-task workflow.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.

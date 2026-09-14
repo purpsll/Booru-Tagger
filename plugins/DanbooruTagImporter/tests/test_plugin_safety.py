@@ -125,6 +125,38 @@ class PluginSafetyTests(unittest.TestCase):
         self.assertTrue(any("2 tags" in message for _level, message in logs))
         self.assertTrue(any("Studio 'sample_artist' would be assigned" in message for _level, message in logs))
 
+    def test_conditional_dnp_artist_is_skipped_for_studio_selection(self):
+        stash = ProcessFakeStash()
+        settings = {"gelbooru_api_key": "gkey", "gelbooru_user_id": "42"}
+        post = {
+            "id": 12345,
+            "tags": "conditional_dnp sample_artist blue_hair",
+        }
+        typed = {
+            "conditional_dnp": 1,
+            "sample_artist": 1,
+            "blue_hair": 0,
+        }
+        logs = []
+        with mock.patch.object(plugin, "ENABLE_DANBOORU", False), \
+             mock.patch.object(plugin, "ENABLE_RULE34", False), \
+             mock.patch.object(plugin, "ENABLE_E621", False), \
+             mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \
+             mock.patch.object(plugin, "gelbooru_post", return_value=post), \
+             mock.patch.object(plugin, "gelbooru_style_tag_metadata", return_value=typed), \
+             mock.patch.object(plugin, "ensure_studio") as ensure_studio, \
+             mock.patch.object(plugin, "log", side_effect=lambda level, message: logs.append((level, message))):
+            result = plugin.process_image(
+                stash, md5_image(), settings, {}, True, {}, {}, {}, {},
+                plugin.PHashIndex(), lookup_mode="fast",
+            )
+
+        self.assertEqual(result, "matched_gelbooru")
+        studio_names = [call.args[2] for call in ensure_studio.call_args_list]
+        self.assertIn("sample_artist", studio_names)
+        self.assertNotIn("conditional_dnp", studio_names)
+        self.assertTrue(any("Studio 'sample_artist' would be assigned" in message for _level, message in logs))
+
     def test_gelbooru_md5_empty_http_200_remains_provider_failure(self):
         class EmptyResponse:
             def __enter__(self):
