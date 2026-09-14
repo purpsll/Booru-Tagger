@@ -23,6 +23,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p tools
           curl -fsSL 'https://raw.githubusercontent.com/purpsll/Booru-Tagger/test/e621-iqdb-adaptive-pacing-3266/tools/apply_e621_iqdb_pacing_3266.py' -o tools/apply_e621_iqdb_pacing_3266.py
           curl -fsSL 'https://raw.githubusercontent.com/purpsll/Booru-Tagger/test/e621-iqdb-adaptive-pacing-3266/tools/fix_apply_e621_iqdb_pacing_3266.py' -o tools/fix_apply_e621_iqdb_pacing_3266.py
           python tools/fix_apply_e621_iqdb_pacing_3266.py
