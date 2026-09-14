@@ -1,4 +1,4 @@
-# Multi-Booru Tag Importer v3.26.0
+# Booru Importer v3.26.0
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
