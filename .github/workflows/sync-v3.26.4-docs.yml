@@ -25,7 +25,6 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          import re
 
           def replace_once(path: Path, old: str, new: str, label: str) -> None:
               text = path.read_text(encoding="utf-8")
@@ -88,60 +87,62 @@ jobs:
 
           release = Path(".github/workflows/release.yml")
           text = release.read_text(encoding="utf-8")
-          pattern = re.compile(
-              r"          cat > release-current\.md <<'EOF'\n.*?\n          EOF\n\n      - name: Update initial public release notes",
-              re.S,
-          )
-          replacement = """          cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.4
-
-          This patch release makes Deep Match substantially faster for images that already completed Fast Scan, while keeping the existing confidence thresholds and metadata policy.
-
-          ### Performance improvements
-
-          - **Unresolved Deep Match reuses completed Fast Scan work.** Images already carrying `Multi-Booru Unresolved` no longer repeat exact MD5 and local pHash stages before visual search.
-          - **Smaller reverse-search uploads.** Deep Match now sends Stash's generated 640px thumbnail to visual-search providers instead of the original full-resolution image.
-          - **Parallel visual fallbacks.** Danbooru IQDB remains first. After it misses, e621 IQDB and SauceNAO can run concurrently, reducing per-image latency when both are available.
-          - **Bounded visual requests.** Reverse-search uploads use a 30-second single-attempt timeout with no inline retries. Temporary network/provider failures remain retryable instead of blocking one image for minutes.
-          - **SauceNAO outage isolation.** HTTP 520–524 responses open a short SauceNAO-only cooldown while the other providers continue normally.
-
-          ### Behavior retained
-
-          - Existing automatic-match and Review thresholds are unchanged.
-          - The first usable artist still becomes the Studio, additional usable artists remain tags, and `conditional_dnp` / `third-party_edit` remain ignored as artist metadata.
-          - Existing ordinary Stash metadata remains preserved.
-          - SauceNAO pacing remains account-aware and supports upgraded/paid account limits.
-          - Temporary provider failures still do not become false permanent No Match decisions.
-
-          ### Validation
-
-          - The release workflow runs the full automated regression suite before packaging.
-          - The Stash repository package and manual GitHub Release ZIP are built from the same v3.26.4 source.
-          - The downloadable ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.
-
-          ### Recommended installation / update
-
-          Add or refresh this source in **Stash → Settings → Plugins**:
-
-          `https://purpsll.github.io/Booru-Tagger/main/index.yml`
-
-          Existing source-based users should see **Booru Importer 3.26.4** as an update.
-
-          ### Manual installation from GitHub Releases
-
-          1. Under **Assets**, download **`Booru-Importer-v3.26.4.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
-          2. Extract the ZIP. It contains a top-level **`DanbooruTagImporter`** folder.
-          3. Copy that entire folder into your Stash plugins directory.
-          4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.
-          5. In Stash, go to **Settings → Plugins** and reload plugins.
-          6. Configure any optional provider credentials in the Booru Importer settings.
-          EOF
-
-      - name: Update initial public release notes"""
-          matches = pattern.findall(text)
-          if len(matches) != 1:
-              raise SystemExit(f"release-current block: expected exactly one match, found {len(matches)}")
-          release.write_text(pattern.sub(replacement, text, count=1), encoding="utf-8")
+          start_marker = "          cat > release-current.md <<'EOF'\n"
+          end_marker = "          EOF\n\n      - name: Update initial public release notes"
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit("release-current block markers not found")
+          end += len("          EOF\n")
+          new_lines = [
+              "          cat > release-current.md <<'EOF'",
+              "          ## Booru Importer v3.26.4",
+              "",
+              "          This patch release makes Deep Match substantially faster for images that already completed Fast Scan, while keeping the existing confidence thresholds and metadata policy.",
+              "",
+              "          ### Performance improvements",
+              "",
+              "          - **Unresolved Deep Match reuses completed Fast Scan work.** Images already carrying `Multi-Booru Unresolved` no longer repeat exact MD5 and local pHash stages before visual search.",
+              "          - **Smaller reverse-search uploads.** Deep Match now sends Stash's generated 640px thumbnail to visual-search providers instead of the original full-resolution image.",
+              "          - **Parallel visual fallbacks.** Danbooru IQDB remains first. After it misses, e621 IQDB and SauceNAO can run concurrently, reducing per-image latency when both are available.",
+              "          - **Bounded visual requests.** Reverse-search uploads use a 30-second single-attempt timeout with no inline retries. Temporary network/provider failures remain retryable instead of blocking one image for minutes.",
+              "          - **SauceNAO outage isolation.** HTTP 520–524 responses open a short SauceNAO-only cooldown while the other providers continue normally.",
+              "",
+              "          ### Behavior retained",
+              "",
+              "          - Existing automatic-match and Review thresholds are unchanged.",
+              "          - The first usable artist still becomes the Studio, additional usable artists remain tags, and `conditional_dnp` / `third-party_edit` remain ignored as artist metadata.",
+              "          - Existing ordinary Stash metadata remains preserved.",
+              "          - SauceNAO pacing remains account-aware and supports upgraded/paid account limits.",
+              "          - Temporary provider failures still do not become false permanent No Match decisions.",
+              "",
+              "          ### Validation",
+              "",
+              "          - The release workflow runs the full automated regression suite before packaging.",
+              "          - The Stash repository package and manual GitHub Release ZIP are built from the same v3.26.4 source.",
+              "          - The downloadable ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.",
+              "",
+              "          ### Recommended installation / update",
+              "",
+              "          Add or refresh this source in **Stash → Settings → Plugins**:",
+              "",
+              "          `https://purpsll.github.io/Booru-Tagger/main/index.yml`",
+              "",
+              "          Existing source-based users should see **Booru Importer 3.26.4** as an update.",
+              "",
+              "          ### Manual installation from GitHub Releases",
+              "",
+              "          1. Under **Assets**, download **`Booru-Importer-v3.26.4.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.",
+              "          2. Extract the ZIP. It contains a top-level **`DanbooruTagImporter`** folder.",
+              "          3. Copy that entire folder into your Stash plugins directory.",
+              "          4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.",
+              "          5. In Stash, go to **Settings → Plugins** and reload plugins.",
+              "          6. Configure any optional provider credentials in the Booru Importer settings.",
+              "          EOF",
+              "",
+          ]
+          text = text[:start] + "\n".join(new_lines) + text[end:]
+          release.write_text(text, encoding="utf-8")
           PY
 
       - name: Validate updated source
