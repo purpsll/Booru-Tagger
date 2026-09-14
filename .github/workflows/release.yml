@@ -48,8 +48,6 @@ jobs:
             zip -r "../$ASSET" DanbooruTagImporter >/dev/null
           )
 
-          # Fail the release if the manual-install archive does not have the
-          # expected Stash plugin structure.
           unzip -Z1 "$ASSET" | grep -qx 'DanbooruTagImporter/DanbooruTagImporter.yml'
           unzip -Z1 "$ASSET" | grep -qx 'DanbooruTagImporter/DanbooruTagImporter.py'
 
@@ -88,32 +86,33 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.4
+          ## Booru Importer v3.26.5
 
-          This patch release substantially improves Deep Match throughput for images that already completed Fast Scan, while keeping the existing confidence thresholds and metadata policy unchanged.
+          This patch release changes e621 IQDB rate-limit handling so one failed image never disables e621 IQDB for the rest of a Deep Match queue.
 
-          ### Performance improvements
+          ### e621 IQDB reliability
 
-          - **Unresolved Deep Match reuses completed Fast Scan work.** Images already carrying `Multi-Booru Unresolved` no longer repeat exact MD5 and local pHash stages before visual search.
-          - **Smaller reverse-search uploads.** Deep Match now sends Stash's generated 640px thumbnail to visual-search providers instead of the original full-resolution image.
-          - **Parallel visual fallbacks.** Danbooru IQDB remains first. After it misses, e621 IQDB and SauceNAO can run concurrently, reducing per-image latency when both are available.
-          - **Bounded visual requests.** Reverse-search uploads use a 30-second single-attempt timeout with no inline retries. Temporary network/provider failures remain retryable instead of blocking one image for minutes.
-          - **SauceNAO outage isolation.** HTTP 520–524 responses open a short SauceNAO-only cooldown while the other providers continue normally.
+          - **Every image gets its own e621 IQDB attempt.** HTTP 429, Cloudflare challenge, timeout, or other transient failure affects only the current image.
+          - **No run-wide e621 IQDB disable.** The next image retries e621 IQDB normally.
+          - **Circuit isolation.** The e621 host's failure/circuit state is cleared before each IQDB image request while normal host pacing is preserved.
+          - **No inline upload retries.** A failing e621 IQDB request still uses the bounded single-attempt visual-search policy, so one image cannot stall the queue for minutes.
+          - **Cleaner logs.** Repeated identical e621 provider warnings are de-duplicated. Images left Retry Later only because of e621 IQDB are logged at INFO while the first provider warning remains visible.
+          - **Conservative state handling remains.** A transient e621 IQDB failure never becomes a false permanent No Match.
 
           ### Behavior retained
 
+          - Deep Match still reuses completed Fast Scan work for normal Unresolved images.
+          - Reverse-search uploads still use Stash's generated 640px thumbnail.
+          - Danbooru IQDB remains first; e621 IQDB and SauceNAO may run concurrently after a Danbooru miss.
           - Existing automatic-match and Review thresholds are unchanged.
-          - The first usable artist still becomes the Studio, additional usable artists remain tags, and `conditional_dnp` / `third-party_edit` remain ignored as artist metadata.
-          - Existing ordinary Stash metadata remains preserved.
-          - SauceNAO pacing remains account-aware and supports upgraded/paid account limits.
-          - Temporary provider failures still do not become false permanent No Match decisions.
+          - `conditional_dnp` and `third-party_edit` remain ignored as artist metadata.
+          - Source-installed users retain the stable internal package ID `DanbooruTagImporter` for Stash's **Installed Plugins → Update** flow.
 
           ### Validation
 
-          - Full regression suite passes with **78 tests**.
-          - The release workflow validates the suite again before packaging.
-          - The Stash repository package and manual GitHub Release ZIP are built from the same v3.26.4 source.
-          - The downloadable ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.
+          - Full regression suite passes with **81 tests**.
+          - Dedicated tests verify e621 per-image retry, warning de-duplication, and host-circuit reset while preserving pacing.
+          - The release workflow validates the complete suite again before packaging.
 
           ### Recommended installation / update
 
@@ -121,20 +120,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          For Stash's built-in **Installed Plugins → Update** feature, install Booru Importer from that source rather than by manually copying the GitHub Release ZIP. Source-installed packages retain the repository association Stash uses to discover updates. The internal package ID intentionally remains `DanbooruTagImporter` so updates replace the existing installation instead of creating a second plugin.
-
-          Existing source-based users should see **Booru Importer 3.26.4** as an update after refreshing plugin sources if needed.
+          Existing source-based users should see **Booru Importer 3.26.5** as an update after refreshing plugin sources if needed.
 
           ### Manual installation from GitHub Releases
 
-          1. Under **Assets**, download **`Booru-Importer-v3.26.4.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
-          2. Extract the ZIP. It contains a top-level **`DanbooruTagImporter`** folder.
-          3. Copy that entire folder into your Stash plugins directory.
-          4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.
-          5. In Stash, go to **Settings → Plugins** and reload plugins.
-          6. Configure any optional provider credentials in the Booru Importer settings.
-
-          Manual ZIP installation remains supported as a fallback, but a manually copied plugin may not be associated with the plugin source for one-click updates. Install from the source URL once if you want future updates to appear through Stash's Installed Plugins page.
+          Download **`Booru-Importer-v3.26.5.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
           EOF
 
       - name: Update initial public release notes
