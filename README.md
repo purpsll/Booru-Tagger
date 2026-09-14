@@ -14,7 +14,7 @@ When Booru Importer finds the original or matching booru post for an image, it c
 - **Source URL** so you can open the original post later
 - **Post date** when the image does not already have a date in Stash
 - **Characters as Stash Performers**
-- **Artists as Stash Studios**
+- **The first usable artist as the Stash Studio, with additional artists preserved as tags**
 
 The plugin is designed to **add useful information without replacing your image files**. It does not download a new copy of the image and it does not intentionally remove your normal Stash tags or other user-created metadata.
 
@@ -51,7 +51,7 @@ Use this method if you would rather download a ZIP yourself.
 3. Under **Assets**, download the file named like:
 
    ```text
-   Booru-Importer-v3.26.1.zip
+   Booru-Importer-v3.26.2.zip
    ```
 
    Future releases will use the same naming pattern with a newer version number.
@@ -175,11 +175,14 @@ For example:
 
 - Source tags are added to the image.
 - Source characters are matched to or created as Performers.
-- Source artists are matched to or created as Studios.
-- The placeholder artist name **`conditional_dnp` is never selected or created as a Studio**. If it appears before a real artist, the next real artist is used instead.
+- The **first usable source artist** is matched to or created as the image Studio.
+- If the source lists more than one usable artist, **every additional artist is preserved as a normal Stash tag** so that artist information is not lost.
+- The placeholder artist name **`conditional_dnp` is ignored as artist metadata**. It is not selected as the Studio and is not added as a secondary-artist tag; the next real artist is used as the Studio.
 - A source Studio is assigned only when the image does not already have one.
 - A source date is added only when the image does not already have a date.
 - The source post URL is added without intentionally removing your existing URLs.
+
+For example, if a source lists `artist_one`, `artist_two`, and `artist_three`, Booru Importer uses `artist_one` as the Studio and keeps `artist_two` and `artist_three` as tags.
 
 The plugin also tries to reuse existing similar Performer and Studio names rather than creating obvious duplicates.
 
