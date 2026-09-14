@@ -36,7 +36,8 @@ jobs:
           git config user.email "105087296+purpsll@users.noreply.github.com"
           git add plugins/DanbooruTagImporter
           git rm -f .github/workflows/apply-deep-performance-fix.yml
-          git rm -f .github/workflows/apply-deep-performance-fix-v2.yml || true
           git rm -f .github/scripts/apply_deep_perf_patch.py
           git commit -m "Speed up unresolved Deep Match"
           git push origin HEAD:main
+
+# Triggered after removing the invalid prototype workflow.
