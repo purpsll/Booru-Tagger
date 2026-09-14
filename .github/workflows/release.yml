@@ -88,25 +88,32 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.3
+          ## Booru Importer v3.26.4
 
-          This patch release expands the artist-exclusion policy so known non-artist markers cannot become Studio metadata or leak back into image tags.
+          This patch release substantially improves Deep Match throughput for images that already completed Fast Scan, while keeping the existing confidence thresholds and metadata policy unchanged.
 
-          ### Fixed
+          ### Performance improvements
 
-          - When **`third-party_edit` appears as artist metadata**, it is ignored completely.
-          - `third-party_edit` will **not** be selected or created as the image Studio.
-          - `third-party_edit` will **not** be added or re-added as an ordinary Stash tag when it was identified as an artist-category value.
-          - `conditional_dnp` remains subject to the same ignore policy.
-          - The first usable artist still becomes the image Studio, and every additional usable artist is preserved as a normal Stash tag.
-          - The exclusion is enforced for both Danbooru/e621 structured artist metadata and Gelbooru/Rule34 flat tag lists.
-          - Added separate regression tests for flat-source and structured-source `third-party_edit` handling.
+          - **Unresolved Deep Match reuses completed Fast Scan work.** Images already carrying `Multi-Booru Unresolved` no longer repeat exact MD5 and local pHash stages before visual search.
+          - **Smaller reverse-search uploads.** Deep Match now sends Stash's generated 640px thumbnail to visual-search providers instead of the original full-resolution image.
+          - **Parallel visual fallbacks.** Danbooru IQDB remains first. After it misses, e621 IQDB and SauceNAO can run concurrently, reducing per-image latency when both are available.
+          - **Bounded visual requests.** Reverse-search uploads use a 30-second single-attempt timeout with no inline retries. Temporary network/provider failures remain retryable instead of blocking one image for minutes.
+          - **SauceNAO outage isolation.** HTTP 520–524 responses open a short SauceNAO-only cooldown while the other providers continue normally.
+
+          ### Behavior retained
+
+          - Existing automatic-match and Review thresholds are unchanged.
+          - The first usable artist still becomes the Studio, additional usable artists remain tags, and `conditional_dnp` / `third-party_edit` remain ignored as artist metadata.
+          - Existing ordinary Stash metadata remains preserved.
+          - SauceNAO pacing remains account-aware and supports upgraded/paid account limits.
+          - Temporary provider failures still do not become false permanent No Match decisions.
 
           ### Validation
 
-          - Full regression suite passes with **73 tests**.
-          - Existing matching thresholds, five-task workflow, rate-limit handling, SauceNAO account-aware pacing, multi-artist preservation, and metadata-preservation behavior remain unchanged.
-          - The downloadable release ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.
+          - Full regression suite passes with **78 tests**.
+          - The release workflow validates the suite again before packaging.
+          - The Stash repository package and manual GitHub Release ZIP are built from the same v3.26.4 source.
+          - The downloadable ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.
 
           ### Recommended installation / update
 
@@ -114,11 +121,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.3** as an update.
+          Existing source-based users should see **Booru Importer 3.26.4** as an update.
 
           ### Manual installation from GitHub Releases
 
-          1. Under **Assets**, download **`Booru-Importer-v3.26.3.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
+          1. Under **Assets**, download **`Booru-Importer-v3.26.4.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
           2. Extract the ZIP. It contains a top-level **`DanbooruTagImporter`** folder.
           3. Copy that entire folder into your Stash plugins directory.
           4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.
