@@ -4,7 +4,7 @@ Credentials / account identifiers plus the SauceNAO polling ceiling are user-con
 in Stash. Other operational presets live here so installations share the same policy.
 """
 
-VERSION = "3.26.7"
+VERSION = "3.26.8"
 PLUGIN_ID = "DanbooruTagImporter"
 USER_AGENT = f"stash-multibooru-tag-importer/{VERSION}"
 
@@ -64,7 +64,8 @@ SAUCENAO_ACCEPT_REVIEW_BAND = False
 SAUCENAO_DEFAULT_REQUESTS_PER_30_SECONDS = 0.0
 SAUCENAO_QUOTA_WINDOW_SECONDS = 30.0
 SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS = 30.0
-SAUCENAO_OUTAGE_COOLDOWN_SECONDS = 180.0
+SAUCENAO_OUTAGE_BACKOFF_SECONDS = 5.0
+SAUCENAO_OUTAGE_MAX_BACKOFF_SECONDS = 20.0
 
 # Metadata policy.
 INCLUDE_META_TAGS = False

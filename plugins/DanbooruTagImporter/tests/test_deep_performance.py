@@ -153,43 +153,33 @@ class DeepPerformanceTests(unittest.TestCase):
         )
         self.assertTrue(plugin.is_retryable_exception(exc))
 
-    def test_saucenao_cooldown_is_quiet_after_initial_outage_warning(self):
+    def test_saucenao_521_is_image_local_and_retry_later_is_info(self):
         stash = FakeStash()
         settings = {"saucenao_api_key": "sauce"}
-        old_until = plugin._SAUCENAO_OUTAGE_UNTIL
-        old_reason = plugin._SAUCENAO_DISABLED_REASON
-        plugin._SAUCENAO_OUTAGE_UNTIL = time.monotonic() + 180.0
-        plugin._SAUCENAO_DISABLED_REASON = (
-            "temporary SauceNAO outage cooldown after HTTP 521 (180s)"
+        outage = urllib.error.HTTPError(
+            "https://saucenao.com", 521, "down", {}, None
         )
-        try:
-            with mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \
-                 mock.patch.object(plugin, "e621_iqdb", return_value=None), \
-                 mock.patch.object(plugin, "log") as logger:
-                first = plugin.process_image(
-                    stash, unresolved_image(), settings, {}, True, {}, {}, {}, {},
-                    plugin.PHashIndex(), lookup_mode="deep",
-                )
-                second = plugin.process_image(
-                    stash, unresolved_image(), settings, {}, True, {}, {}, {}, {},
-                    plugin.PHashIndex(), lookup_mode="deep",
-                )
+        with mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \
+             mock.patch.object(plugin, "e621_iqdb", return_value=None), \
+             mock.patch.object(plugin, "saucenao_resolve", side_effect=[outage, None]) as sauce, \
+             mock.patch.object(plugin, "log") as logger:
+            first = plugin.process_image(
+                stash, unresolved_image(), settings, {}, True, {}, {}, {}, {},
+                plugin.PHashIndex(), lookup_mode="deep",
+            )
+            second = plugin.process_image(
+                stash, unresolved_image(), settings, {}, True, {}, {}, {}, {},
+                plugin.PHashIndex(), lookup_mode="deep",
+            )
 
-            self.assertEqual(first, "retry_later")
-            self.assertEqual(second, "retry_later")
-            repeated_provider_warnings = [
-                call for call in logger.call_args_list
-                if "SauceNAO not authoritative" in str(call)
-            ]
-            self.assertEqual(repeated_provider_warnings, [])
-            retry_logs = [
-                call for call in logger.call_args_list if "RETRY LATER" in str(call)
-            ]
-            self.assertEqual(len(retry_logs), 2)
-            self.assertTrue(all(call.args[0] == "INFO" for call in retry_logs))
-        finally:
-            plugin._SAUCENAO_OUTAGE_UNTIL = old_until
-            plugin._SAUCENAO_DISABLED_REASON = old_reason
+        self.assertEqual(first, "retry_later")
+        self.assertEqual(second, "no_match")
+        self.assertEqual(sauce.call_count, 2)
+        retry_logs = [
+            call for call in logger.call_args_list if "RETRY LATER" in str(call)
+        ]
+        self.assertEqual(len(retry_logs), 1)
+        self.assertEqual(retry_logs[0].args[0], "INFO")
 
 
 if __name__ == "__main__":

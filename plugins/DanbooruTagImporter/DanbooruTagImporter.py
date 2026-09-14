@@ -56,7 +56,8 @@ from constants import (
     NO_MATCH_MARKER_TAG, STATUS_MARKER_TAGS, UNRESOLVED_MARKER_TAG, PERFORMER_SIMILARITY_THRESHOLD, PROVIDER_REQUEST_INTERVAL_MS,
     REQUEST_DELAY_MS, RULE34_BASE, RULE34_RATE_LIMIT_COOLDOWN_SECONDS, SAUCENAO_ACCEPT_REVIEW_BAND, SAUCENAO_BASE,
     SAUCENAO_DEFAULT_REQUESTS_PER_30_SECONDS, SAUCENAO_HIGH_CONFIDENCE,
-    SAUCENAO_OUTAGE_COOLDOWN_SECONDS, SAUCENAO_QUOTA_WINDOW_SECONDS,
+    SAUCENAO_OUTAGE_BACKOFF_SECONDS, SAUCENAO_OUTAGE_MAX_BACKOFF_SECONDS,
+    SAUCENAO_QUOTA_WINDOW_SECONDS,
     SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS,
     SAUCENAO_REVIEW_MINIMUM, SIMILAR_TAG_MARGIN, SIMILAR_TAG_THRESHOLD,
     STUDIO_SIMILARITY_THRESHOLD, USER_AGENT, VERBOSE_FAST_DECISION_LOGGING, VERSION,
@@ -77,7 +78,8 @@ _SAUCENAO_LAST_REQUEST_AT = 0.0
 _SAUCENAO_PAUSE_UNTIL = 0.0
 _SAUCENAO_QUOTA_PAUSES = 0
 _SAUCENAO_QUOTA_ANNOUNCED = False
-_SAUCENAO_OUTAGE_UNTIL = 0.0
+_SAUCENAO_OUTAGE_HITS = 0
+_SAUCENAO_OUTAGE_STREAK = 0
 _E621_IQDB_RATE_LIMIT_HITS = 0
 _E621_IQDB_LAST_REQUEST_AT = 0.0
 _E621_IQDB_BACKOFF_UNTIL = 0.0
@@ -256,38 +258,49 @@ def _saucenao_note_rate_limit(reason: str, retry_after: float = 0.0) -> None:
     delay = max(float(SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS), float(retry_after or 0.0))
     _SAUCENAO_PAUSE_UNTIL = max(_SAUCENAO_PAUSE_UNTIL, time.monotonic() + delay)
     _SAUCENAO_QUOTA_PAUSES += 1
-    log("WARNING", f"SauceNAO rate limit hit; pausing SauceNAO for {delay:.0f}s and continuing afterward ({reason})")
+    key = ("SauceNAO rate limit", "429")
+    if key not in _PROVIDER_WARNING_ONCE:
+        _PROVIDER_WARNING_ONCE.add(key)
+        log("WARNING", f"SauceNAO rate limit hit; pausing SauceNAO for {delay:.0f}s and continuing afterward ({reason}). Repeated rate-limit warnings are suppressed.")
 
 
 def _saucenao_is_disabled() -> bool:
-    global _SAUCENAO_OUTAGE_UNTIL, _SAUCENAO_DISABLED_REASON
-    if _SAUCENAO_DAILY_EXHAUSTED:
-        return True
-    now = time.monotonic()
-    if _SAUCENAO_OUTAGE_UNTIL > now:
-        return True
-    if _SAUCENAO_OUTAGE_UNTIL:
-        _SAUCENAO_OUTAGE_UNTIL = 0.0
-        if _SAUCENAO_DISABLED_REASON.startswith("temporary SauceNAO outage"):
-            _SAUCENAO_DISABLED_REASON = ""
-    return False
+    # Only a genuinely exhausted long-term quota disables SauceNAO. Temporary
+    # 52x origin failures never skip SauceNAO for later images.
+    return bool(_SAUCENAO_DAILY_EXHAUSTED)
 
 
-def _saucenao_note_outage(status_code: int) -> None:
-    global _SAUCENAO_OUTAGE_UNTIL, _SAUCENAO_DISABLED_REASON
-    cooldown = max(30.0, float(SAUCENAO_OUTAGE_COOLDOWN_SECONDS))
-    _SAUCENAO_OUTAGE_UNTIL = max(
-        _SAUCENAO_OUTAGE_UNTIL, time.monotonic() + cooldown
+def _saucenao_note_success() -> None:
+    """Recover gradually from an outage streak after a successful request."""
+    global _SAUCENAO_OUTAGE_STREAK
+    _SAUCENAO_OUTAGE_STREAK = max(0, int(_SAUCENAO_OUTAGE_STREAK) - 1)
+
+
+def _saucenao_note_outage(status_code: int) -> float:
+    """Back off briefly after 52x, but keep SauceNAO eligible for every image."""
+    global _SAUCENAO_OUTAGE_HITS, _SAUCENAO_OUTAGE_STREAK
+    global _SAUCENAO_PAUSE_UNTIL, _SAUCENAO_QUOTA_PAUSES
+
+    _SAUCENAO_OUTAGE_HITS += 1
+    _SAUCENAO_OUTAGE_STREAK += 1
+    base = max(1.0, float(SAUCENAO_OUTAGE_BACKOFF_SECONDS))
+    maximum = max(base, float(SAUCENAO_OUTAGE_MAX_BACKOFF_SECONDS))
+    delay = min(maximum, base * (2 ** min(6, _SAUCENAO_OUTAGE_STREAK - 1)))
+    _SAUCENAO_PAUSE_UNTIL = max(
+        _SAUCENAO_PAUSE_UNTIL, time.monotonic() + delay
     )
-    _SAUCENAO_DISABLED_REASON = (
-        f"temporary SauceNAO outage cooldown after HTTP {status_code} "
-        f"({cooldown:.0f}s)"
-    )
-    log(
-        "WARNING",
-        f"SauceNAO HTTP {status_code}; pausing SauceNAO lookups for {cooldown:.0f}s "
-        "while Deep Match continues with the other providers.",
-    )
+    _SAUCENAO_QUOTA_PAUSES += 1
+
+    key = ("SauceNAO outage", str(status_code))
+    if key not in _PROVIDER_WARNING_ONCE:
+        _PROVIDER_WARNING_ONCE.add(key)
+        log(
+            "WARNING",
+            f"SauceNAO HTTP {status_code}; keeping SauceNAO enabled and waiting "
+            f"{delay:.0f}s before its next image search. Repeated identical "
+            "outage warnings are suppressed.",
+        )
+    return delay
 
 
 def _rule34_host() -> str:
@@ -861,6 +874,7 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
                 raise RuntimeError("SauceNAO unavailable: daily quota exhausted")
             _saucenao_note_rate_limit("API rate status")
             raise RuntimeError("SauceNAO temporarily unavailable: API rate status")
+    _saucenao_note_success()
     results=payload.get("results") if isinstance(payload,dict) else None
     if not isinstance(results,list): return None
     ranked=[]
@@ -2872,10 +2886,9 @@ def process_image(
                 sauce_detail = str(
                     saucenao_outcome.detail or saucenao_outcome.status.value
                 )
-                # _saucenao_note_outage already announces the cooldown once.
-                # Do not emit the same provider warning for every image skipped
-                # during that cooldown; the per-image decision remains visible.
-                if not sauce_detail.startswith("temporary SauceNAO outage cooldown"):
+                # 52x outages are already announced once by _saucenao_note_outage.
+                # Keep the per-image Retry Later result at INFO without another warning.
+                if not re.search(r"HTTP 52[0-4]", sauce_detail):
                     _log_lookup_problem_once("SauceNAO", sauce_detail)
 
     if post is None:
@@ -2950,23 +2963,10 @@ def process_image(
                     f"Image {iid}: UNRESOLVED; {_format_stage_decisions(decision_details)}",
                 )
             return "no_md5" if not md5 else "unresolved"
-        retry_outcomes = [
-            outcome for outcome in outcomes
-            if outcome.status in {LookupStatus.RETRYABLE_ERROR, LookupStatus.UNAVAILABLE}
-        ]
-        quiet_provider_deferral = bool(retry_outcomes) and all(
-            (outcome.provider == "e621" and outcome.stage == "iqdb")
-            or (
-                outcome.provider == "SauceNAO"
-                and outcome.stage == "visual"
-                and str(outcome.detail or "").startswith(
-                    "temporary SauceNAO outage cooldown"
-                )
-            )
-            for outcome in retry_outcomes
-        )
+        # Provider-level warnings are emitted once at the point of failure.
+        # Per-image Retry Later lines are operational state, not new warnings.
         log(
-            "INFO" if quiet_provider_deferral else "WARNING",
+            "INFO",
             f"Image {iid}: RETRY LATER; no persistent No Match marker was written. "
             f"{_format_stage_decisions(decision_details)}",
         )
@@ -3285,6 +3285,7 @@ def _finalize_stats(stats: Dict[str, Any]) -> Dict[str, Any]:
     stats["source_errors_gelbooru"] = 1 if "Gelbooru" in _SOURCE_DISABLED else 0
     stats["source_errors_rule34"] = 1 if ("Rule34" in _SOURCE_DISABLED or int(stats.get("rule34_rate_limit_hits", 0) or 0) or int(stats.get("rule34_cooldown_skips", 0) or 0)) else 0
     stats["saucenao_rate_limit_hits"] = _SAUCENAO_RATE_LIMIT_HITS
+    stats["saucenao_outage_hits"] = _SAUCENAO_OUTAGE_HITS
     stats["saucenao_quota_pauses"] = _SAUCENAO_QUOTA_PAUSES
     stats["saucenao_daily_quota_exhausted"] = 1 if _SAUCENAO_DAILY_EXHAUSTED else 0
     stats["saucenao_account_type"] = _SAUCENAO_ACCOUNT_TYPE
@@ -3360,7 +3361,7 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
     global _SAUCENAO_ACCOUNT_TYPE, _SAUCENAO_SHORT_LIMIT, _SAUCENAO_SHORT_REMAINING
     global _SAUCENAO_LONG_LIMIT, _SAUCENAO_LONG_REMAINING, _SAUCENAO_LAST_REQUEST_AT
     global _SAUCENAO_PAUSE_UNTIL, _SAUCENAO_QUOTA_PAUSES, _SAUCENAO_QUOTA_ANNOUNCED
-    global _SAUCENAO_OUTAGE_UNTIL
+    global _SAUCENAO_OUTAGE_HITS, _SAUCENAO_OUTAGE_STREAK
 
     _E621_IQDB_RATE_LIMIT_HITS = 0
     _SAUCENAO_RATE_LIMIT_HITS = 0
@@ -3375,7 +3376,8 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
     _SAUCENAO_PAUSE_UNTIL = 0.0
     _SAUCENAO_QUOTA_PAUSES = 0
     _SAUCENAO_QUOTA_ANNOUNCED = False
-    _SAUCENAO_OUTAGE_UNTIL = 0.0
+    _SAUCENAO_OUTAGE_HITS = 0
+    _SAUCENAO_OUTAGE_STREAK = 0
     _RULE34_COOLDOWN_ANNOUNCED = False
     _PROVIDER_WARNING_ONCE.clear()
     _SOURCE_DISABLED.clear()
@@ -3447,6 +3449,7 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
         "rule34_cooldown_skips": 0,
         "pending_rule34_confirmation": 0,
         "saucenao_rate_limit_hits": 0,
+        "saucenao_outage_hits": 0,
         "saucenao_quota_pauses": 0,
         "saucenao_daily_quota_exhausted": 0,
         "saucenao_account_type": "",
