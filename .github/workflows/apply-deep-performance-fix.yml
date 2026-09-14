@@ -45,3 +45,5 @@ jobs:
           git rm -f .github/scripts/update_retry_regression.py
           git commit -m "Speed up unresolved Deep Match"
           git push origin HEAD:main
+
+# Scoped retry-regression update validated before publication.
