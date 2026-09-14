@@ -1,0 +1,58 @@
+name: Apply Booru Importer 3.26.7 hardening
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/apply-hardening-3267.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Apply guarded hardening patch
+        run: python tools/apply_hardening_3267.py
+
+      - name: Compile source
+        run: python -m py_compile plugins/DanbooruTagImporter/*.py
+
+      - name: Run regression suite
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+
+      - name: Validate package and policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -qx 'version: 3.26.7' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
+          grep -qx 'VERSION = "3.26.7"' plugins/DanbooruTagImporter/constants.py
+          grep -q 'E621_IQDB_AUTH_MIN_INTERVAL_SECONDS = 3.0' plugins/DanbooruTagImporter/constants.py
+          grep -q 'E621_IQDB_RECOVERY_DECAY_SECONDS = 1.0' plugins/DanbooruTagImporter/constants.py
+          grep -q 'quiet_provider_deferral' plugins/DanbooruTagImporter/DanbooruTagImporter.py
+          git diff --check
+          chmod +x build_site.sh
+          ./build_site.sh
+          grep -q 'id: DanbooruTagImporter' _site/index.yml
+          grep -q 'version: 3.26.7-' _site/index.yml
+          test -f _site/DanbooruTagImporter.zip
+
+      - name: Commit tested changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md plugins/DanbooruTagImporter
+          git diff --cached --check
+          git commit -m 'Harden e621 pacing and SauceNAO cooldown logging'
+          git push origin HEAD:main
