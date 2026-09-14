@@ -125,6 +125,42 @@ class PluginSafetyTests(unittest.TestCase):
         self.assertTrue(any("2 tags" in message for _level, message in logs))
         self.assertTrue(any("Studio 'sample_artist' would be assigned" in message for _level, message in logs))
 
+    def test_secondary_artists_become_tags_while_primary_becomes_studio(self):
+        stash = ProcessFakeStash()
+        settings = {"gelbooru_api_key": "gkey", "gelbooru_user_id": "42"}
+        post = {
+            "id": 12345,
+            "tags": "conditional_dnp primary_artist secondary_artist third_artist blue_hair",
+        }
+        typed = {
+            "conditional_dnp": 1,
+            "primary_artist": 1,
+            "secondary_artist": 1,
+            "third_artist": 1,
+            "blue_hair": 0,
+        }
+        with mock.patch.object(plugin, "ENABLE_DANBOORU", False), \
+             mock.patch.object(plugin, "ENABLE_RULE34", False), \
+             mock.patch.object(plugin, "ENABLE_E621", False), \
+             mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \
+             mock.patch.object(plugin, "gelbooru_post", return_value=post), \
+             mock.patch.object(plugin, "gelbooru_style_tag_metadata", return_value=typed), \
+             mock.patch.object(plugin, "ensure_studio", return_value={"id": "studio-1", "name": "primary_artist"}) as ensure_studio, \
+             mock.patch.object(plugin, "ensure_tags", return_value=[]) as ensure_tags:
+            result = plugin.process_image(
+                stash, md5_image(), settings, {}, False, {}, {}, {}, {},
+                plugin.PHashIndex(), lookup_mode="fast",
+            )
+
+        self.assertEqual(result, "updated_gelbooru")
+        self.assertEqual([call.args[2] for call in ensure_studio.call_args_list], ["primary_artist"])
+        imported_names = list(ensure_tags.call_args.args[2])
+        self.assertIn("secondary_artist", imported_names)
+        self.assertIn("third_artist", imported_names)
+        self.assertIn("blue_hair", imported_names)
+        self.assertNotIn("primary_artist", imported_names)
+        self.assertNotIn("conditional_dnp", imported_names)
+
     def test_conditional_dnp_artist_is_skipped_for_studio_selection(self):
         stash = ProcessFakeStash()
         settings = {"gelbooru_api_key": "gkey", "gelbooru_user_id": "42"}

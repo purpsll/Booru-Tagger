@@ -2715,6 +2715,15 @@ def process_image(
         rule34_api_key, rule34_user_id,
     )
 
+    studio_artists = (
+        [
+            artist for artist in artists
+            if str(artist).strip().casefold() != "conditional_dnp"
+        ]
+        if artist_mapping in {"studios", "both"}
+        else []
+    )
+
     # Map structured categories according to user policy.
     if artist_mapping in {"tags", "both"}:
         existing_name_keys = {n.casefold() for n in names}
@@ -2722,12 +2731,21 @@ def process_image(
             if artist.casefold() not in existing_name_keys:
                 names.append(artist)
                 existing_name_keys.add(artist.casefold())
-    elif source in {"gelbooru", "rule34"} and artists:
-        # Gelbooru-style post payloads start as one flat tag list. Once artist
-        # category metadata is known and artists are mapped to Studios, do not
-        # also create duplicate ordinary Stash tags for those same names.
-        artist_keys = {a.casefold() for a in artists}
-        names = [n for n in names if n.casefold() not in artist_keys]
+    elif artist_mapping == "studios":
+        if source in {"gelbooru", "rule34"} and artists:
+            # Gelbooru-style post payloads start as one flat tag list. Remove
+            # artist-category entries first, then add back only secondary real
+            # artists as ordinary tags. The first usable artist is the Studio.
+            artist_keys = {a.casefold() for a in artists}
+            names = [n for n in names if n.casefold() not in artist_keys]
+
+        # A Stash image has one Studio slot. Preserve every additional real
+        # artist as an image tag instead of silently dropping that metadata.
+        existing_name_keys = {n.casefold() for n in names}
+        for artist in studio_artists[1:]:
+            if artist.casefold() not in existing_name_keys:
+                names.append(artist)
+                existing_name_keys.add(artist.casefold())
 
     if character_mapping in {"tags", "both"}:
         existing_name_keys = {n.casefold() for n in names}
@@ -2740,14 +2758,6 @@ def process_image(
         names = [n for n in names if n.casefold() not in character_keys]
 
     performers = characters if character_mapping in {"performers", "both"} else []
-    studio_artists = (
-        [
-            artist for artist in artists
-            if str(artist).strip().casefold() != "conditional_dnp"
-        ]
-        if artist_mapping in {"studios", "both"}
-        else []
-    )
     studio_targets = (
         studio_artists if create_secondary_artist_studios else studio_artists[:1]
     )
