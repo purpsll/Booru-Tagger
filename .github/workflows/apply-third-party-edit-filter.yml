@@ -1,0 +1,116 @@
+name: Apply third-party_edit artist exclusion
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-third-party-edit-filter.yml'
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Apply artist exclusion policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          plugin_path = Path('plugins/DanbooruTagImporter/DanbooruTagImporter.py')
+          text = plugin_path.read_text(encoding='utf-8')
+
+          old_import = '    INCLUDE_META_TAGS, LOCAL_PHASH_MAX_DISTANCE, LOCAL_PHASH_MIN_MARGIN,\n'
+          new_import = '    IGNORED_ARTIST_TAGS, INCLUDE_META_TAGS, LOCAL_PHASH_MAX_DISTANCE, LOCAL_PHASH_MIN_MARGIN,\n'
+          if old_import in text:
+              text = text.replace(old_import, new_import, 1)
+          elif new_import not in text:
+              raise SystemExit('constants import block did not match expected source')
+
+          old_policy = '''    studio_artists = (\n        [\n            artist for artist in artists\n            if str(artist).strip().casefold() != "conditional_dnp"\n        ]\n        if artist_mapping in {"studios", "both"}\n        else []\n    )\n\n    # Map structured categories according to user policy.\n    if artist_mapping in {"tags", "both"}:\n        existing_name_keys = {n.casefold() for n in names}\n        for artist in artists:\n            if artist.casefold() not in existing_name_keys:\n                names.append(artist)\n                existing_name_keys.add(artist.casefold())\n    elif artist_mapping == "studios":\n        if source in {"gelbooru", "rule34"} and artists:\n            # Gelbooru-style post payloads start as one flat tag list. Remove\n            # artist-category entries first, then add back only secondary real\n            # artists as ordinary tags. The first usable artist is the Studio.\n            artist_keys = {a.casefold() for a in artists}\n            names = [n for n in names if n.casefold() not in artist_keys]\n\n        # A Stash image has one Studio slot. Preserve every additional real\n        # artist as an image tag instead of silently dropping that metadata.\n        existing_name_keys = {n.casefold() for n in names}\n        for artist in studio_artists[1:]:\n            if artist.casefold() not in existing_name_keys:\n                names.append(artist)\n                existing_name_keys.add(artist.casefold())\n\n'''
+
+          new_policy = '''    ignored_artist_keys = {\n        str(name).strip().casefold() for name in IGNORED_ARTIST_TAGS\n    }\n    usable_artists = [\n        artist for artist in artists\n        if str(artist).strip().casefold() not in ignored_artist_keys\n    ]\n    studio_artists = (\n        usable_artists if artist_mapping in {"studios", "both"} else []\n    )\n\n    # Gelbooru/Rule34 start with one flat source tag list. If a value is known to\n    # be an ignored artist marker, remove it before any mapping policy can turn it\n    # back into an ordinary Stash tag.\n    if source in {"gelbooru", "rule34"} and artists:\n        ignored_source_artist_keys = {\n            str(artist).strip().casefold() for artist in artists\n            if str(artist).strip().casefold() in ignored_artist_keys\n        }\n        if ignored_source_artist_keys:\n            names = [\n                name for name in names\n                if str(name).strip().casefold() not in ignored_source_artist_keys\n            ]\n\n    # Map structured categories according to user policy.\n    if artist_mapping in {"tags", "both"}:\n        existing_name_keys = {n.casefold() for n in names}\n        for artist in usable_artists:\n            if artist.casefold() not in existing_name_keys:\n                names.append(artist)\n                existing_name_keys.add(artist.casefold())\n    elif artist_mapping == "studios":\n        if source in {"gelbooru", "rule34"} and artists:\n            # Artist-category entries are removed from the flat source tag list.\n            # The first usable artist becomes the Studio; later usable artists\n            # are re-added below as ordinary image tags.\n            artist_keys = {a.casefold() for a in artists}\n            names = [n for n in names if n.casefold() not in artist_keys]\n\n        # A Stash image has one Studio slot. Preserve every additional usable\n        # artist as an image tag instead of silently dropping that metadata.\n        existing_name_keys = {n.casefold() for n in names}\n        for artist in usable_artists[1:]:\n            if artist.casefold() not in existing_name_keys:\n                names.append(artist)\n                existing_name_keys.add(artist.casefold())\n\n'''
+
+          if old_policy in text:
+              text = text.replace(old_policy, new_policy, 1)
+          elif new_policy not in text:
+              raise SystemExit('artist routing policy block did not match expected source')
+
+          plugin_path.write_text(text, encoding='utf-8')
+
+          constants_path = Path('plugins/DanbooruTagImporter/constants.py')
+          constants = constants_path.read_text(encoding='utf-8')
+          if 'VERSION = "3.26.2"' not in constants:
+              raise SystemExit('expected version 3.26.2 not found')
+          constants = constants.replace('VERSION = "3.26.2"', 'VERSION = "3.26.3"', 1)
+          anchor = 'CREATE_SECONDARY_ARTIST_STUDIOS = False\n'
+          addition = 'IGNORED_ARTIST_TAGS = frozenset({"conditional_dnp", "third-party_edit"})\n'
+          if addition not in constants:
+              if anchor not in constants:
+                  raise SystemExit('metadata policy anchor not found')
+              constants = constants.replace(anchor, anchor + addition, 1)
+          constants_path.write_text(constants, encoding='utf-8')
+
+          manifest_path = Path('plugins/DanbooruTagImporter/DanbooruTagImporter.yml')
+          manifest = manifest_path.read_text(encoding='utf-8')
+          manifest = manifest.replace('version: 3.26.2', 'version: 3.26.3', 1)
+          manifest = manifest.replace(
+              '# Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp is ignored as artist metadata.',
+              '# Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp and third-party_edit are ignored as artist metadata.',
+              1,
+          )
+          manifest_path.write_text(manifest, encoding='utf-8')
+
+          task_path = Path('plugins/DanbooruTagImporter/tests/test_task_menu.py')
+          task_text = task_path.read_text(encoding='utf-8')
+          task_text = task_text.replace('self.assertEqual(yaml_version, "3.26.2")', 'self.assertEqual(yaml_version, "3.26.3")', 1)
+          task_path.write_text(task_text, encoding='utf-8')
+
+          test_path = Path('plugins/DanbooruTagImporter/tests/test_plugin_safety.py')
+          tests = test_path.read_text(encoding='utf-8')
+          marker = '    def test_conditional_dnp_artist_is_skipped_for_studio_selection(self):\n'
+          if marker not in tests:
+              raise SystemExit('test insertion marker not found')
+
+          gel_test_name = 'test_third_party_edit_artist_is_ignored_on_flat_source'
+          if gel_test_name not in tests:
+              addition = '''    def test_third_party_edit_artist_is_ignored_on_flat_source(self):\n        stash = ProcessFakeStash()\n        settings = {"gelbooru_api_key": "gkey", "gelbooru_user_id": "42"}\n        post = {\n            "id": 12346,\n            "tags": "third-party_edit primary_artist secondary_artist blue_hair",\n        }\n        typed = {\n            "third-party_edit": 1,\n            "primary_artist": 1,\n            "secondary_artist": 1,\n            "blue_hair": 0,\n        }\n        with mock.patch.object(plugin, "ENABLE_DANBOORU", False), \\\n             mock.patch.object(plugin, "ENABLE_RULE34", False), \\\n             mock.patch.object(plugin, "ENABLE_E621", False), \\\n             mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \\\n             mock.patch.object(plugin, "gelbooru_post", return_value=post), \\\n             mock.patch.object(plugin, "gelbooru_style_tag_metadata", return_value=typed), \\\n             mock.patch.object(plugin, "ensure_studio", return_value={"id": "studio-1", "name": "primary_artist"}) as ensure_studio, \\\n             mock.patch.object(plugin, "ensure_tags", return_value=[]) as ensure_tags:\n            result = plugin.process_image(\n                stash, md5_image(), settings, {}, False, {}, {}, {}, {},\n                plugin.PHashIndex(), lookup_mode="fast",\n            )\n\n        self.assertEqual(result, "updated_gelbooru")\n        self.assertEqual([call.args[2] for call in ensure_studio.call_args_list], ["primary_artist"])\n        imported_names = list(ensure_tags.call_args.args[2])\n        self.assertIn("secondary_artist", imported_names)\n        self.assertIn("blue_hair", imported_names)\n        self.assertNotIn("third-party_edit", imported_names)\n        self.assertNotIn("primary_artist", imported_names)\n\n'''
+              tests = tests.replace(marker, addition + marker, 1)
+
+          dan_test_name = 'test_third_party_edit_artist_is_ignored_on_structured_source'
+          if dan_test_name not in tests:
+              addition = '''    def test_third_party_edit_artist_is_ignored_on_structured_source(self):\n        stash = ProcessFakeStash()\n        post = {\n            "id": 22346,\n            "md5": "a" * 32,\n            "tag_string_artist": "third-party_edit primary_artist secondary_artist",\n            "tag_string_character": "",\n            "tag_string_copyright": "",\n            "tag_string_general": "blue_hair",\n        }\n        with mock.patch.object(plugin, "ENABLE_GELBOORU", False), \\\n             mock.patch.object(plugin, "ENABLE_RULE34", False), \\\n             mock.patch.object(plugin, "ENABLE_E621", False), \\\n             mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \\\n             mock.patch.object(plugin, "danbooru_post", return_value=post), \\\n             mock.patch.object(plugin, "ensure_studio", return_value={"id": "studio-1", "name": "primary_artist"}) as ensure_studio, \\\n             mock.patch.object(plugin, "ensure_tags", return_value=[]) as ensure_tags:\n            result = plugin.process_image(\n                stash, md5_image(), {}, {}, False, {}, {}, {}, {},\n                plugin.PHashIndex(), lookup_mode="fast",\n            )\n\n        self.assertEqual(result, "updated_danbooru")\n        self.assertEqual([call.args[2] for call in ensure_studio.call_args_list], ["primary_artist"])\n        imported_names = list(ensure_tags.call_args.args[2])\n        self.assertIn("secondary_artist", imported_names)\n        self.assertIn("blue_hair", imported_names)\n        self.assertNotIn("third-party_edit", imported_names)\n        self.assertNotIn("primary_artist", imported_names)\n\n'''
+              tests = tests.replace(marker, addition + marker, 1)
+
+          test_path.write_text(tests, encoding='utf-8')
+
+          readme_path = Path('plugins/DanbooruTagImporter/README.md')
+          readme = readme_path.read_text(encoding='utf-8')
+          readme = readme.replace('# Booru Importer v3.26.2', '# Booru Importer v3.26.3', 1)
+          old_goal = 'v3.26.2 preserves multi-artist metadata correctly: the first usable artist is assigned as the image Studio, while every additional usable artist is retained as an ordinary Stash tag. The booru placeholder `conditional_dnp` is ignored as artist metadata, so it cannot displace the real Studio or become a secondary-artist tag. This release retains the public-release hardening and account-aware SauceNAO throughput introduced in v3.26.0 without changing the established matching thresholds or five-task workflow.'
+          new_goal = 'v3.26.3 expands the artist-exclusion policy: `conditional_dnp` and `third-party_edit` are ignored when they appear as artist metadata. Neither marker can become the image Studio or be re-added as an ordinary tag. The first usable artist is assigned as the image Studio, while every additional usable artist is retained as an ordinary Stash tag. This release retains the matching thresholds, five-task workflow, and account-aware SauceNAO behavior from the previous public release.'
+          if old_goal not in readme:
+              raise SystemExit('technical README release-goal text did not match expected source')
+          readme = readme.replace(old_goal, new_goal, 1)
+          readme_path.write_text(readme, encoding='utf-8')
+          PY
+
+          git diff --check
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+
+      - name: Commit tested fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "purpsll"
+          git config user.email "105087296+purpsll@users.noreply.github.com"
+          git add plugins/DanbooruTagImporter
+          git commit -m "Ignore third-party_edit artist metadata"
+          git push origin HEAD:main
