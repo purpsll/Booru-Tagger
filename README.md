@@ -2,9 +2,9 @@
 
 **Booru Importer is a Stash plugin that automatically adds useful metadata to images already in your Stash library.**
 
-It can match an image against **Danbooru, Gelbooru, Rule34, and e621**, then bring the matching information back into Stash.
+It can match images against **Danbooru, Gelbooru, Rule34, and e621**, then bring matching information back into Stash.
 
-If you are not familiar with the term *booru*: a booru is an imageboard where images are usually organized with detailed tags such as character names, artist names, series names, and other descriptive information.
+If you are not familiar with the term *booru*: a booru is an imageboard where images are organized with detailed tags such as character names, artist names, series names, and other descriptive information.
 
 ## What does Booru Importer do?
 
@@ -22,9 +22,13 @@ The plugin is designed to **add useful information without replacing your image 
 
 ---
 
-## Quick installation
+# Installation
 
-The easiest way to install and update Booru Importer is through its Stash plugin source.
+There are two supported ways to install Booru Importer.
+
+## Option 1 — Install through Stash (recommended)
+
+This is the easiest method and is also the easiest way to receive future updates.
 
 In **Stash → Settings → Plugins**, add this plugin source:
 
@@ -34,23 +38,63 @@ https://purpsll.github.io/Booru-Tagger/main/index.yml
 
 Refresh the available plugins, then install **Booru Importer**.
 
+When a newer version is published, refresh the plugin source in Stash and install the available update.
+
 The exact button names may vary slightly between Stash versions.
 
-### Manual installation
+## Option 2 — Install manually from GitHub Releases
 
-If you prefer to install it manually, copy this folder from the repository into your Stash plugins directory:
+Use this method if you would rather download a ZIP yourself.
+
+1. Open the repository's **Releases** page.
+2. Open the **Latest** release.
+3. Under **Assets**, download the file named like:
+
+   ```text
+   Booru-Importer-v3.26.1.zip
+   ```
+
+   Future releases will use the same naming pattern with a newer version number.
+
+4. **Do not use GitHub's automatically generated `Source code (zip)` or `Source code (tar.gz)` archives for the simplest manual install.** Use the `Booru-Importer-vX.Y.Z.zip` file listed under Assets.
+5. Extract the downloaded ZIP.
+6. Inside it you will find one folder:
+
+   ```text
+   DanbooruTagImporter/
+   ```
+
+7. Copy that entire **`DanbooruTagImporter`** folder into your Stash plugins directory.
+8. When finished, the important file should be located like this:
+
+   ```text
+   <your Stash plugins directory>/DanbooruTagImporter/DanbooruTagImporter.yml
+   ```
+
+9. In Stash, go to **Settings → Plugins** and reload plugins.
+10. Open **Booru Importer** settings and enter any optional provider credentials you want to use.
+
+### Updating a manual installation
+
+Download the newest `Booru-Importer-vX.Y.Z.zip` release asset, extract it, and replace the files in your existing `DanbooruTagImporter` plugin folder with the files from the new release.
+
+Your provider settings are configured through Stash; they are not included in the release ZIP.
+
+### Installing directly from the repository source
+
+Developers can also copy:
 
 ```text
 plugins/DanbooruTagImporter/
 ```
 
-Then reload plugins from Stash.
+from this repository into their Stash plugins directory. Normal users should use either the Stash plugin source or the release ZIP instead.
 
 ---
 
 ## How it works
 
-Booru Importer uses two main stages so that easy matches are handled quickly and slower reverse-image searches are only used when needed.
+Booru Importer uses two main stages so easy matches are handled quickly and slower reverse-image searches are used only when needed.
 
 ### 1. Fast Scan
 
@@ -80,7 +124,7 @@ Booru Importer only accepts strong matches automatically. Less-certain matches c
 | **2. Preview Deep Match (10 Unresolved, No Changes)** | Tests Deep Match on 10 images without changing Stash. | Use this if you want to see what Deep Match will do first. |
 | **3. Deep Match All Unresolved Images** | Performs the slower reverse-image-search process on unresolved images. | Run after Fast Scan. |
 | **4. Recheck Review Candidates** | Rechecks images where a possible match was found but was not confident enough to accept automatically. | Use when you have images marked Review. |
-| **5. Retry No-Match Images** | Searches previously unmatched images again. | Useful later if the source sites or search indexes have gained new images. |
+| **5. Retry No-Match Images** | Searches previously unmatched images again. | Useful later if source sites or search indexes have gained new images. |
 
 For most users, the normal workflow is simply:
 
@@ -103,7 +147,7 @@ These tags also keep the plugin from unnecessarily searching the same successful
 
 ## Do I need API keys or accounts?
 
-**You do not need to configure every service.** Booru Importer will skip optional services that you have not configured.
+**You do not need to configure every service.** Booru Importer skips optional services you have not configured.
 
 The plugin settings support credentials for:
 
@@ -132,6 +176,7 @@ For example:
 - Source tags are added to the image.
 - Source characters are matched to or created as Performers.
 - Source artists are matched to or created as Studios.
+- The placeholder artist name **`conditional_dnp` is never selected or created as a Studio**. If it appears before a real artist, the next real artist is used instead.
 - A source Studio is assigned only when the image does not already have one.
 - A source date is added only when the image does not already have a date.
 - The source post URL is added without intentionally removing your existing URLs.
@@ -174,9 +219,29 @@ Temporary network/provider failures are designed not to become permanent "No Mat
 
 ## Troubleshooting
 
-If Booru Importer is installed but does not appear in Stash, reload plugins from **Settings → Plugins** and make sure Python is available to the environment running Stash.
+If Booru Importer is installed but does not appear in Stash, check these items first:
 
-If images are not matching, remember that **not every image exists on a supported booru**, and exact matching cannot identify resized or edited copies. Run Fast Scan first, then try Deep Match for unresolved images.
+- The plugin folder is named **`DanbooruTagImporter`**.
+- `DanbooruTagImporter.yml` is directly inside that folder and is **not** buried inside an extra nested folder.
+- Python is available to the environment running Stash.
+- You reloaded plugins from **Settings → Plugins** after a manual installation.
+
+A correct manual installation looks like:
+
+```text
+Stash plugins/
+└── DanbooruTagImporter/
+    ├── DanbooruTagImporter.yml
+    ├── DanbooruTagImporter.py
+    ├── constants.py
+    ├── entity_matching.py
+    ├── lookup_state.py
+    ├── matching.py
+    ├── network.py
+    └── stash_client.py
+```
+
+If images are not matching, remember that **not every image exists on a supported booru**, and exact matching cannot identify every resized or edited copy. Run Fast Scan first, then try Deep Match for unresolved images.
 
 If one provider repeatedly reports authentication errors, check that provider's username/user ID and API key in the plugin settings. Different providers use different credential formats.
 
@@ -194,11 +259,11 @@ If you report a problem on GitHub, it is helpful to include:
 
 ## Requirements
 
-- Stash with external plugin support
+- Stash with external-plugin support
 - Python available as `python` where Stash launches plugins
 - Internet access to whichever source services you want the plugin to use
 
-Booru Importer itself uses Python's standard library and does not require you to install additional Python packages with `pip`.
+Booru Importer itself uses Python's standard library and does not require additional Python packages through `pip`.
 
 ---
 
