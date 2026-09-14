@@ -26,6 +26,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          nl -ba plugins/DanbooruTagImporter/DanbooruTagImporter.py | sed -n '3155,3185p'
           python -m py_compile plugins/DanbooruTagImporter/DanbooruTagImporter.py plugins/DanbooruTagImporter/network.py
           PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
 
@@ -46,8 +47,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # release.yml is updated separately via the GitHub connector because
-          # the Actions token cannot safely rewrite workflow files.
           git checkout -- .github/workflows/release.yml
           git rm tools/_apply_e621_per_image_retry_patch.py
           git config user.name 'github-actions[bot]'
