@@ -24,12 +24,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x build_site.sh
-          ./build_site.sh _release
+
           VERSION="$(grep '^version:' plugins/DanbooruTagImporter/DanbooruTagImporter.yml | head -1 | awk '{print $2}')"
-          cp _release/DanbooruTagImporter.zip "Booru-Importer-v${VERSION}.zip"
+          ASSET="Booru-Importer-v${VERSION}.zip"
+
+          # GitHub Releases are intended to be easy to install manually. Keep the
+          # plugin directory as the top-level folder so users can extract it and
+          # copy DanbooruTagImporter directly into their Stash plugins directory.
+          rm -rf release-package "$ASSET"
+          mkdir -p release-package/DanbooruTagImporter
+          cp -a plugins/DanbooruTagImporter/. release-package/DanbooruTagImporter/
+          find release-package -type d \( -name '__pycache__' -o -name '.pytest_cache' \) -prune -exec rm -rf {} +
+          find release-package -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
+          (
+            cd release-package
+            zip -r "../$ASSET" DanbooruTagImporter >/dev/null
+          )
+
+          # Fail the release if the manual-install archive does not have the
+          # expected Stash plugin structure.
+          unzip -Z1 "$ASSET" | grep -qx 'DanbooruTagImporter/DanbooruTagImporter.yml'
+          unzip -Z1 "$ASSET" | grep -qx 'DanbooruTagImporter/DanbooruTagImporter.py'
+
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "ASSET=Booru-Importer-v${VERSION}.zip" >> "$GITHUB_ENV"
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
 
       - name: Write release notes
         shell: bash
@@ -55,7 +74,7 @@ jobs:
 
           ### Installation
 
-          Add this source in **Stash → Settings → Plugins**:
+          The recommended installation method is the Stash plugin source:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
@@ -79,7 +98,7 @@ jobs:
           - Full regression suite passes with **70 tests**.
           - Removed generated Python `__pycache__` / `.pyc` files from the public repository.
           - Added `.gitignore` rules so generated Python and test-cache files are not included in future releases.
-          - The downloadable ZIP is built from the same current plugin source used by the Stash repository feed.
+          - The downloadable release ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.
 
           ### Existing behavior retained
 
@@ -90,13 +109,22 @@ jobs:
           - Conservative duplicate matching for Studios, Performers, and tags.
           - Existing Stash metadata is preserved.
 
-          ### Installation / update
+          ### Recommended installation / update
 
           Add or refresh this source in **Stash → Settings → Plugins**:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing users should see **Booru Importer 3.26.1** as an update.
+          Existing source-based users should see **Booru Importer 3.26.1** as an update.
+
+          ### Manual installation from GitHub Releases
+
+          1. Under **Assets**, download **`Booru-Importer-v3.26.1.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
+          2. Extract the ZIP. It contains a top-level **`DanbooruTagImporter`** folder.
+          3. Copy that entire folder into your Stash plugins directory.
+          4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.
+          5. In Stash, go to **Settings → Plugins** and reload plugins.
+          6. Configure any optional provider credentials in the Booru Importer settings.
           EOF
 
       - name: Update initial public release notes
