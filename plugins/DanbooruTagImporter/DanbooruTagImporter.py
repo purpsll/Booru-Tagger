@@ -44,6 +44,7 @@ from constants import (
     E621_BASE, E621_GENERAL_MIN_INTERVAL_SECONDS, E621_IQDB_ANON_MIN_INTERVAL_SECONDS,
     E621_IQDB_AUTH_MIN_INTERVAL_SECONDS, E621_IQDB_MIN_SCORE,
     E621_IQDB_RATE_LIMIT_BACKOFF_SECONDS, E621_IQDB_RATE_LIMIT_MAX_BACKOFF_SECONDS,
+    E621_IQDB_RECOVERY_DECAY_SECONDS,
     ENABLE_DANBOORU, ENABLE_DANBOORU_IQDB,
     ENABLE_E621, ENABLE_E621_IQDB, ENABLE_GELBOORU, ENABLE_LOCAL_PHASH_REUSE,
     ENABLE_RULE34, ENABLE_SAUCENAO, ENTITY_SIMILARITY_MARGIN, EXCLUDED_EXTENSIONS,
@@ -81,6 +82,7 @@ _E621_IQDB_RATE_LIMIT_HITS = 0
 _E621_IQDB_LAST_REQUEST_AT = 0.0
 _E621_IQDB_BACKOFF_UNTIL = 0.0
 _E621_IQDB_CONSECUTIVE_RATE_LIMITS = 0
+_E621_IQDB_RECOVERY_INTERVAL_SECONDS = 0.0
 _RULE34_COOLDOWN_ANNOUNCED = False
 _PROVIDER_WARNING_ONCE: set[tuple[str, str]] = set()
 
@@ -498,11 +500,18 @@ def _e621_iqdb_is_authenticated(username: str, api_key: str) -> bool:
     return bool(str(username or "").strip() and str(api_key or "").strip())
 
 
-def _e621_iqdb_min_interval(username: str, api_key: str) -> float:
+def _e621_iqdb_base_interval(username: str, api_key: str) -> float:
     return float(
         E621_IQDB_AUTH_MIN_INTERVAL_SECONDS
         if _e621_iqdb_is_authenticated(username, api_key)
         else E621_IQDB_ANON_MIN_INTERVAL_SECONDS
+    )
+
+
+def _e621_iqdb_min_interval(username: str, api_key: str) -> float:
+    return max(
+        _e621_iqdb_base_interval(username, api_key),
+        float(_E621_IQDB_RECOVERY_INTERVAL_SECONDS or 0.0),
     )
 
 
@@ -543,8 +552,9 @@ def _e621_iqdb_note_rate_limit(
 ) -> float:
     """Delay only the next e621 IQDB attempt after a 429/challenge."""
     global _E621_IQDB_BACKOFF_UNTIL, _E621_IQDB_CONSECUTIVE_RATE_LIMITS
+    global _E621_IQDB_RECOVERY_INTERVAL_SECONDS
     _E621_IQDB_CONSECUTIVE_RATE_LIMITS += 1
-    minimum = _e621_iqdb_min_interval(username, api_key)
+    minimum = _e621_iqdb_base_interval(username, api_key)
     adaptive = min(
         float(E621_IQDB_RATE_LIMIT_MAX_BACKOFF_SECONDS),
         float(E621_IQDB_RATE_LIMIT_BACKOFF_SECONDS)
@@ -554,13 +564,31 @@ def _e621_iqdb_note_rate_limit(
     _E621_IQDB_BACKOFF_UNTIL = max(
         _E621_IQDB_BACKOFF_UNTIL, time.monotonic() + delay
     )
+    _E621_IQDB_RECOVERY_INTERVAL_SECONDS = max(
+        float(_E621_IQDB_RECOVERY_INTERVAL_SECONDS or 0.0), delay
+    )
     return delay
 
 
-def _e621_iqdb_note_success() -> None:
+def _e621_iqdb_note_success(username: str, api_key: str) -> None:
+    """Recover gradually after throttling instead of snapping back to the base rate."""
     global _E621_IQDB_BACKOFF_UNTIL, _E621_IQDB_CONSECUTIVE_RATE_LIMITS
+    global _E621_IQDB_RECOVERY_INTERVAL_SECONDS
     _E621_IQDB_BACKOFF_UNTIL = 0.0
-    _E621_IQDB_CONSECUTIVE_RATE_LIMITS = 0
+    _E621_IQDB_CONSECUTIVE_RATE_LIMITS = max(
+        0, _E621_IQDB_CONSECUTIVE_RATE_LIMITS - 1
+    )
+    base = _e621_iqdb_base_interval(username, api_key)
+    recovery = float(_E621_IQDB_RECOVERY_INTERVAL_SECONDS or 0.0)
+    if recovery > base:
+        recovery = max(
+            base, recovery - max(0.1, float(E621_IQDB_RECOVERY_DECAY_SECONDS))
+        )
+        _E621_IQDB_RECOVERY_INTERVAL_SECONDS = (
+            0.0 if recovery <= base else recovery
+        )
+    else:
+        _E621_IQDB_RECOVERY_INTERVAL_SECONDS = 0.0
 
 
 def e621_iqdb(
@@ -618,7 +646,7 @@ def e621_iqdb(
             retries=DEEP_VISUAL_HTTP_RETRIES,
         ) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-        _e621_iqdb_note_success()
+        _e621_iqdb_note_success(username, api_key)
     except urllib.error.HTTPError as exc:
         global _E621_IQDB_RATE_LIMIT_HITS
         detail = exc.read().decode("utf-8", errors="replace")
@@ -2841,10 +2869,14 @@ def process_image(
                         if saucenao_outcome.detail else ""
                     )
                 )
-                log(
-                    "WARNING",
-                    f"SauceNAO not authoritative: {saucenao_outcome.detail}",
+                sauce_detail = str(
+                    saucenao_outcome.detail or saucenao_outcome.status.value
                 )
+                # _saucenao_note_outage already announces the cooldown once.
+                # Do not emit the same provider warning for every image skipped
+                # during that cooldown; the per-image decision remains visible.
+                if not sauce_detail.startswith("temporary SauceNAO outage cooldown"):
+                    _log_lookup_problem_once("SauceNAO", sauce_detail)
 
     if post is None:
         if review_candidate_score > 0:
@@ -2922,12 +2954,19 @@ def process_image(
             outcome for outcome in outcomes
             if outcome.status in {LookupStatus.RETRYABLE_ERROR, LookupStatus.UNAVAILABLE}
         ]
-        only_e621_iqdb_retry = bool(retry_outcomes) and all(
-            outcome.provider == "e621" and outcome.stage == "iqdb"
+        quiet_provider_deferral = bool(retry_outcomes) and all(
+            (outcome.provider == "e621" and outcome.stage == "iqdb")
+            or (
+                outcome.provider == "SauceNAO"
+                and outcome.stage == "visual"
+                and str(outcome.detail or "").startswith(
+                    "temporary SauceNAO outage cooldown"
+                )
+            )
             for outcome in retry_outcomes
         )
         log(
-            "INFO" if only_e621_iqdb_retry else "WARNING",
+            "INFO" if quiet_provider_deferral else "WARNING",
             f"Image {iid}: RETRY LATER; no persistent No Match marker was written. "
             f"{_format_stage_decisions(decision_details)}",
         )

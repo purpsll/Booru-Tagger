@@ -4,7 +4,7 @@ Credentials / account identifiers plus the SauceNAO polling ceiling are user-con
 in Stash. Other operational presets live here so installations share the same policy.
 """
 
-VERSION = "3.26.6"
+VERSION = "3.26.7"
 PLUGIN_ID = "DanbooruTagImporter"
 USER_AGENT = f"stash-multibooru-tag-importer/{VERSION}"
 
@@ -42,10 +42,11 @@ E621_IQDB_MIN_SCORE = 90.0
 # uploads are paced below the current 6-per-10-second allowance; anonymous
 # uploads respect the much stricter 1-per-60-second allowance.
 E621_GENERAL_MIN_INTERVAL_SECONDS = 1.0
-E621_IQDB_AUTH_MIN_INTERVAL_SECONDS = 2.0
+E621_IQDB_AUTH_MIN_INTERVAL_SECONDS = 3.0
 E621_IQDB_ANON_MIN_INTERVAL_SECONDS = 65.0
 E621_IQDB_RATE_LIMIT_BACKOFF_SECONDS = 5.0
 E621_IQDB_RATE_LIMIT_MAX_BACKOFF_SECONDS = 60.0
+E621_IQDB_RECOVERY_DECAY_SECONDS = 1.0
 ENABLE_SAUCENAO = True
 # Deep visual-search requests upload a Stash-generated 640px thumbnail.
 # Do not retry an expensive image upload inline; transient failures stay Retry Later.
