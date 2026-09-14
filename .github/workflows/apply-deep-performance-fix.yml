@@ -24,6 +24,35 @@ jobs:
           # Normalize the 3.26.3 description expected by the one-shot patch helper.
           sed -i 's|^description: .*$|description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. The first usable artist becomes the Studio and additional artists are retained as tags. Run Fast Scan first, then Deep Match unresolved images.|' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
           python .github/scripts/apply_deep_perf_patch.py
+          # This regression used to create Retry Later by replaying a Fast-stage
+          # Danbooru MD5 429. Unresolved Deep Match intentionally no longer replays
+          # Fast stages, so exercise the same safety guarantee with a visual 429.
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('plugins/DanbooruTagImporter/tests/test_plugin_safety.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        with mock.patch.object(plugin, "ENABLE_GELBOORU", False), \\
+             mock.patch.object(plugin, "ENABLE_RULE34", False), \\
+             mock.patch.object(plugin, "ENABLE_E621", False), \\
+             mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \\
+             mock.patch.object(plugin, "ENABLE_E621_IQDB", False), \\
+             mock.patch.object(plugin, "ENABLE_SAUCENAO", False), \\
+             mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \\
+             mock.patch.object(plugin, "danbooru_post", side_effect=rate_limited):
+'''
+          new = '''        with mock.patch.object(plugin, "ENABLE_GELBOORU", False), \\
+             mock.patch.object(plugin, "ENABLE_RULE34", False), \\
+             mock.patch.object(plugin, "ENABLE_E621", True), \\
+             mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \\
+             mock.patch.object(plugin, "ENABLE_E621_IQDB", True), \\
+             mock.patch.object(plugin, "ENABLE_SAUCENAO", False), \\
+             mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \\
+             mock.patch.object(plugin, "e621_iqdb", side_effect=rate_limited):
+'''
+          if old not in text:
+              raise SystemExit('obsolete retry regression block not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
 
       - name: Validate source
         shell: bash
