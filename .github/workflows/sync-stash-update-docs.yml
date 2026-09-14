@@ -57,14 +57,14 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
           rm -rf /tmp/booru-site
           bash build_site.sh /tmp/booru-site
-          grep -q '^\- id: DanbooruTagImporter$' /tmp/booru-site/index.yml
-          grep -q '^  name: Booru Importer$' /tmp/booru-site/index.yml
-          grep -q '^  version: 3.26.4-' /tmp/booru-site/index.yml
-          grep -q '^  path: DanbooruTagImporter.zip$' /tmp/booru-site/index.yml
-          unzip -p /tmp/booru-site/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^id: DanbooruTagImporter$'
-          unzip -p /tmp/booru-site/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^name: Booru Importer$'
-          unzip -p /tmp/booru-site/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^version: 3.26.4$'
-          cat /tmp/booru-site/index.yml
+          grep -q '^\- id: DanbooruTagImporter$' /tmp/booru-site/main/index.yml
+          grep -q '^  name: Booru Importer$' /tmp/booru-site/main/index.yml
+          grep -q '^  version: 3.26.4-' /tmp/booru-site/main/index.yml
+          grep -q '^  path: DanbooruTagImporter.zip$' /tmp/booru-site/main/index.yml
+          unzip -p /tmp/booru-site/main/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^id: DanbooruTagImporter$'
+          unzip -p /tmp/booru-site/main/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^name: Booru Importer$'
+          unzip -p /tmp/booru-site/main/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^version: 3.26.4$'
+          cat /tmp/booru-site/main/index.yml
 
       - name: Commit documentation
         shell: bash
