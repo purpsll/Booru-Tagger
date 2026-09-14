@@ -17,6 +17,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Narrow guarded patch anchors
+        run: python tools/fix_apply_e621_iqdb_pacing_3266.py
+
       - name: Apply guarded patch
         run: python tools/apply_e621_iqdb_pacing_3266.py
 
