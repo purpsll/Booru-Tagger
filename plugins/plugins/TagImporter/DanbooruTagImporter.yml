@@ -1,0 +1,103 @@
+name: Multi-Booru Tag Importer
+description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Run the fast scan first, then Deep Match unresolved images. Review and No-Match queues can be retried separately.
+version: 3.26.0
+exec:
+  - python
+  - "{pluginDir}/DanbooruTagImporter.py"
+
+interface: raw
+errLog: info
+
+settings:
+  danbooru_login:
+    displayName: Danbooru login
+    description: Optional. Danbooru username used with the API key for authenticated requests and Danbooru IQDB. Exact MD5 lookup still works without it.
+    type: STRING
+
+  danbooru_api_key:
+    displayName: Danbooru API key
+    description: Optional. Used with the Danbooru login for authenticated requests and Danbooru IQDB. Never written to plugin logs.
+    type: STRING
+
+  gelbooru_user_id:
+    displayName: Gelbooru user ID
+    description: Optional. Gelbooru API user ID used with the API key when configured.
+    type: STRING
+
+  gelbooru_api_key:
+    displayName: Gelbooru API key
+    description: Optional. Gelbooru API key used with the user ID when configured. Never written to plugin logs.
+    type: STRING
+
+  rule34_user_id:
+    displayName: Rule34 user ID
+    description: Optional. Rule34 requires both user ID and API key; Rule34 lookups are skipped when either is missing.
+    type: STRING
+
+  rule34_api_key:
+    displayName: Rule34 API key
+    description: Optional. Rule34 requires both user ID and API key; Rule34 lookups are skipped when either is missing. Never written to plugin logs.
+    type: STRING
+
+  e621_username:
+    displayName: e621 username
+    description: Optional but recommended. Used in the identifying e621 User-Agent and with the API key for authenticated requests.
+    type: STRING
+
+  e621_api_key:
+    displayName: e621 API key
+    description: Optional e621 API key for authenticated requests. Never written to plugin logs.
+    type: STRING
+
+  saucenao_api_key:
+    displayName: SauceNAO API key
+    description: Optional. Enables the SauceNAO Deep Match fallback. If omitted, SauceNAO is skipped. Never written to plugin logs.
+    type: STRING
+
+  saucenao_requests_per_30_seconds:
+    displayName: SauceNAO searches per 30 seconds
+    description: Maximum SauceNAO polling rate. Leave blank or set 0 for Auto (recommended); the plugin reads the account-specific short-term limit returned by SauceNAO, so paid/upgraded accounts automatically run faster. A positive value caps the plugin below that allowance; it never intentionally exceeds SauceNAO's reported limit.
+    type: NUMBER
+
+tasks:
+  - name: 1. Scan Unprocessed Images (Fast)
+    description: Start here. Quickly checks only images that have not been classified yet using exact MD5 matches and trusted local pHash matches. Matches become Imported; clean misses are queued as Unresolved for Deep Match.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: fast
+      dry_run: false
+
+  - name: 2. Preview Deep Match (10 Unresolved, No Changes)
+    description: Optional safety preview before the slower Deep Match. Tests the full lookup chain on the next 10 Unresolved images and shows what would happen without changing Stash.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: true
+      limit: 10
+      force_recheck: false
+
+  - name: 3. Deep Match All Unresolved Images
+    description: Runs the slower reverse-image-search pass only on images queued as Unresolved. High-confidence matches become Imported, review-band matches become Review, and authoritative misses become No Match. Temporary provider failures stay Unresolved for a later retry.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: false
+      force_recheck: false
+
+  - name: 4. Recheck Review Candidates
+    description: Rechecks only images in the Review queue. A stronger result can promote an image to Imported; otherwise it can remain Review or move to No Match after an authoritative miss.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: false
+      force_recheck: true
+      only_review: true
+
+  - name: 5. Retry No-Match Images
+    description: Rechecks only images currently marked No Match. Use this later if booru databases or reverse-search indexes may have gained new matches.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: false
+      force_recheck: true
+      only_no_match: true
