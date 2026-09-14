@@ -1,4 +1,5 @@
 name: Publish Booru Importer Release
+# Keep release assets aligned with the final source-installed plugin tree.
 
 on:
   push:
