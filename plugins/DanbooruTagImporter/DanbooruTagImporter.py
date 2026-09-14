@@ -73,7 +73,6 @@ _SAUCENAO_PAUSE_UNTIL = 0.0
 _SAUCENAO_QUOTA_PAUSES = 0
 _SAUCENAO_QUOTA_ANNOUNCED = False
 _SAUCENAO_OUTAGE_UNTIL = 0.0
-_E621_IQDB_DISABLED_FOR_RUN = False
 _E621_IQDB_RATE_LIMIT_HITS = 0
 _RULE34_COOLDOWN_ANNOUNCED = False
 _PROVIDER_WARNING_ONCE: set[tuple[str, str]] = set()
@@ -480,16 +479,6 @@ def e621_post_by_id(post_id: str, username: str = "", api_key: str = "") -> Opti
     return None
 
 
-def _e621_iqdb_is_disabled() -> bool:
-    return bool(_E621_IQDB_DISABLED_FOR_RUN)
-
-
-def _disable_e621_iqdb_for_run(reason: str) -> None:
-    global _E621_IQDB_DISABLED_FOR_RUN
-    if not _E621_IQDB_DISABLED_FOR_RUN:
-        _E621_IQDB_DISABLED_FOR_RUN = True
-        log("WARNING", f"Disabling e621 IQDB for remainder of this run: {reason}")
-
 
 def e621_iqdb(
     image_bytes: bytes,
@@ -501,7 +490,10 @@ def e621_iqdb(
     """Reverse-search the existing Stash image against e621's IQDB endpoint.
 
     The image is uploaded in memory only; no duplicate image is written to disk.
+    A failure on one image never disables IQDB for the next image in the queue.
     """
+    e621_host = (urllib.parse.urlparse(E621_BASE).hostname or "e621.net").casefold()
+    HTTP.clear_host_failures(e621_host)
     boundary = "----StashE621IQDBBoundary7MA4YWxkTrZu0gW"
     chunks: List[bytes] = []
 
@@ -557,11 +549,11 @@ def e621_iqdb(
 
         if exc.code == 429 or cloudflare_challenge:
             _E621_IQDB_RATE_LIMIT_HITS += 1
-            _disable_e621_iqdb_for_run(
-                f"HTTP {exc.code}" + (" / Cloudflare challenge" if cloudflare_challenge else "")
+            reason = f"HTTP {exc.code}" + (
+                " / Cloudflare challenge" if cloudflare_challenge else ""
             )
             raise RuntimeError(
-                f"e621 IQDB temporarily unavailable: HTTP {exc.code}"
+                f"e621 IQDB temporarily unavailable for this image: {reason}"
             ) from exc
 
         raise RuntimeError(f"e621 IQDB HTTP {exc.code}: {detail[:300]}") from exc
@@ -2571,13 +2563,7 @@ def process_image(
         visual_jobs: Dict[str, Tuple[str, str, Any]] = {}
 
         run_e621_iqdb = bool(ENABLE_E621 and ENABLE_E621_IQDB)
-        if run_e621_iqdb and _e621_iqdb_is_disabled():
-            visual_outcomes["e621"] = LookupOutcome(
-                "e621", "iqdb", LookupStatus.UNAVAILABLE, None,
-                "e621 IQDB disabled for this run after a rate-limit/challenge response",
-            )
-            run_e621_iqdb = False
-        elif not run_e621_iqdb:
+        if not run_e621_iqdb:
             decision_details.append("e621 IQDB: disabled")
 
         run_saucenao = bool(ENABLE_SAUCENAO and saucenao_api_key)
@@ -2686,9 +2672,9 @@ def process_image(
                     f"e621 IQDB: {e621_outcome.status.value}"
                     + (f" ({e621_outcome.detail})" if e621_outcome.detail else "")
                 )
-                log(
-                    "WARNING",
-                    f"e621 IQDB not authoritative: {e621_outcome.detail}",
+                _log_lookup_problem_once(
+                    "e621 IQDB",
+                    str(e621_outcome.detail or e621_outcome.status.value),
                 )
 
         saucenao_outcome = visual_outcomes.get("saucenao")
@@ -2845,8 +2831,16 @@ def process_image(
                     f"Image {iid}: UNRESOLVED; {_format_stage_decisions(decision_details)}",
                 )
             return "no_md5" if not md5 else "unresolved"
+        retry_outcomes = [
+            outcome for outcome in outcomes
+            if outcome.status in {LookupStatus.RETRYABLE_ERROR, LookupStatus.UNAVAILABLE}
+        ]
+        only_e621_iqdb_retry = bool(retry_outcomes) and all(
+            outcome.provider == "e621" and outcome.stage == "iqdb"
+            for outcome in retry_outcomes
+        )
         log(
-            "WARNING",
+            "INFO" if only_e621_iqdb_retry else "WARNING",
             f"Image {iid}: RETRY LATER; no persistent No Match marker was written. "
             f"{_format_stage_decisions(decision_details)}",
         )
@@ -3175,7 +3169,6 @@ def _finalize_stats(stats: Dict[str, Any]) -> Dict[str, Any]:
     requested_sauce_rate = float(stats.get("saucenao_requested_requests_per_30_seconds", 0.0) or 0.0)
     stats["saucenao_effective_requests_per_30_seconds"] = round(_saucenao_effective_rate(requested_sauce_rate), 3)
     stats["e621_iqdb_rate_limit_hits"] = _E621_IQDB_RATE_LIMIT_HITS
-    stats["e621_iqdb_disabled_after_429"] = 1 if _E621_IQDB_DISABLED_FOR_RUN else 0
     started = float(stats.pop("_started_at_monotonic", time.monotonic()))
     elapsed = max(0.0, time.monotonic() - started)
     stats["elapsed_seconds"] = round(elapsed, 2)
@@ -3236,14 +3229,13 @@ def _record_result(stats: Dict[str, Any], result: str) -> None:
 
 
 def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
-    global _E621_IQDB_DISABLED_FOR_RUN, _E621_IQDB_RATE_LIMIT_HITS
+    global _E621_IQDB_RATE_LIMIT_HITS
     global _SAUCENAO_RATE_LIMIT_HITS, _SAUCENAO_DAILY_EXHAUSTED, _SAUCENAO_DISABLED_REASON
     global _SAUCENAO_ACCOUNT_TYPE, _SAUCENAO_SHORT_LIMIT, _SAUCENAO_SHORT_REMAINING
     global _SAUCENAO_LONG_LIMIT, _SAUCENAO_LONG_REMAINING, _SAUCENAO_LAST_REQUEST_AT
     global _SAUCENAO_PAUSE_UNTIL, _SAUCENAO_QUOTA_PAUSES, _SAUCENAO_QUOTA_ANNOUNCED
     global _SAUCENAO_OUTAGE_UNTIL
 
-    _E621_IQDB_DISABLED_FOR_RUN = False
     _E621_IQDB_RATE_LIMIT_HITS = 0
     _SAUCENAO_RATE_LIMIT_HITS = 0
     _SAUCENAO_DAILY_EXHAUSTED = False
@@ -3305,7 +3297,6 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
         "matched_e621": 0,
         "matched_e621_iqdb": 0,
         "e621_iqdb_rate_limit_hits": 0,
-        "e621_iqdb_disabled_after_429": 0,
         "matched_saucenao": 0,
         "matched_local_phash": 0,
         "updated": 0,

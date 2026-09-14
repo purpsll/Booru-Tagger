@@ -1,10 +1,10 @@
-# Booru Importer v3.26.4
+# Booru Importer v3.26.5
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.4 substantially improves Deep Match throughput. Images already marked Unresolved reuse their completed Fast Scan result instead of repeating MD5 and local pHash lookups. Reverse-image searches upload Stash's generated 640px thumbnail instead of the original full-resolution image. After Danbooru IQDB misses, e621 IQDB and SauceNAO run concurrently, with a 30-second single-attempt timeout so temporary upload/network failures remain Retry Later instead of blocking one image for minutes. SauceNAO Cloudflare/origin 52x errors enter a short provider-only cooldown. Match thresholds and artist mapping behavior are unchanged.
+v3.26.5 keeps the Deep Match throughput improvements from v3.26.4 and changes e621 IQDB failure scope. A 429, Cloudflare challenge, timeout, or other transient e621 IQDB failure affects only the current image; the next image starts with e621 IQDB eligible again. The e621 host circuit is cleared per IQDB image while request pacing is preserved, so one bad request cannot disqualify the rest of a long queue. Repeated identical provider warnings are de-duplicated. Match thresholds and artist mapping behavior are unchanged.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -16,7 +16,7 @@ v3.26.4 substantially improves Deep Match throughput. Images already marked Unre
 
 ## Requirements
 
-- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during development, and the v3.26.4 release workflow runs the full automated regression suite before packaging the public release.
+- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during development, and the v3.26.5 release workflow runs the full automated regression suite before packaging the public release.
 - Python available as `python` in the environment where Stash launches plugins.
 - No pip packages are required; the plugin uses only Python's standard library.
 
@@ -59,7 +59,7 @@ Optional safety preview of the next ten Unresolved images. It performs the same 
 
 Processes only images carrying `Multi-Booru Unresolved`.
 
-For images already marked `Multi-Booru Unresolved` by the normal Fast Scan, v3.26.4 reuses that completed fast-stage result instead of repeating exact MD5 and local pHash lookups. Forced rechecks such as Review and No-Match retries still reevaluate the full lookup path.
+For images already marked `Multi-Booru Unresolved` by the normal Fast Scan, v3.26.5 reuses that completed fast-stage result instead of repeating exact MD5 and local pHash lookups. Forced rechecks such as Review and No-Match retries still reevaluate the full lookup path.
 
 Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and SauceNAO (when configured) are launched concurrently:
 
@@ -108,6 +108,8 @@ State transitions remove the old plugin status marker without removing ordinary 
 - Deep visual-search payload: Stash-generated 640px thumbnail rather than the original full-resolution image
 - Deep visual-search timeout: 30 seconds per request with no inline upload retries; transient failures remain retryable
 - After Danbooru IQDB misses, e621 IQDB and SauceNAO may run concurrently with at most 2 visual-search workers
+- e621 IQDB transient failures are image-local: every new image retries e621 IQDB; no run-wide e621 IQDB disable is retained
+- Repeated identical e621 IQDB provider warnings are logged once per run; e621-only Retry Later image lines are informational rather than warning-level noise
 - SauceNAO HTTP 520–524: 180-second SauceNAO-only outage cooldown while other providers continue
 - General external-provider minimum spacing: 250 ms per host
 - Danbooru long-running spacing: approximately 1 second per request
@@ -140,7 +142,7 @@ Provider APIs and terms can change independently of this plugin. Users are respo
 
 ## Provider reliability
 
-Transient failures never become persistent negative matches. HTTP 429, temporary 5xx responses, network errors, malformed responses, and circuit-open states keep the current workflow state eligible for retry.
+Transient failures never become persistent negative matches. HTTP 429, temporary 5xx responses, network errors, malformed responses, and circuit-open states keep the current workflow state eligible for retry. e621 IQDB is deliberately reconsidered for every image: its failure/circuit state is cleared before each IQDB image request while host pacing remains in force, so a 429 or Cloudflare challenge on one image cannot disable e621 IQDB for the remainder of the queue.
 
 Rule34 receives special handling: the first HTTP 429 opens a Rule34-only cooldown immediately, without sleeping through `Retry-After`. Other providers continue. Images that still need Rule34 confirmation remain pending for a later Fast run.
 

@@ -97,6 +97,18 @@ class HTTPClient:
         with self._lock:
             self._states.clear()
 
+    def clear_host_failures(self, host: str) -> None:
+        """Clear failure/circuit state for one host while preserving request pacing."""
+        host = str(host or "").casefold().strip()
+        if not host:
+            return
+        with self._lock:
+            state = self._states.get(host)
+            if state is None:
+                return
+            state.consecutive_failures = 0
+            state.circuit_open_until = 0.0
+
     @staticmethod
     def _host_for(request: urllib.request.Request) -> str:
         return (urllib.parse.urlparse(request.full_url).hostname or "unknown").casefold()

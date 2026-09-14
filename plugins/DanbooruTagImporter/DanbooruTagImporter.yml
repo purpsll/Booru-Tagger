@@ -1,6 +1,6 @@
 name: Booru Importer
-description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Fast Scan handles exact matches; Deep Match reuses that result and uses bandwidth-efficient visual search for unresolved images.
-version: 3.26.4
+description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Fast Scan handles exact matches; Deep Match uses bandwidth-efficient visual search and retries e621 IQDB independently for each image.
+version: 3.26.5
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp and third-party_edit are ignored as artist metadata.
 exec:
