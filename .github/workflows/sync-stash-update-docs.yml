@@ -1,0 +1,78 @@
+name: Sync Stash Update Documentation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sync-stash-update-docs.yml'
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Document Stash built-in updates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          root = Path("README.md")
+          replace_once(
+              root,
+              "Refresh the available plugins, then install **Booru Importer**.\n\nWhen a newer version is published, refresh the plugin source in Stash and install the available update.\n\nThe exact button names may vary slightly between Stash versions.",
+              "Refresh the available plugins, then install **Booru Importer**.\n\n### Built-in Stash updates\n\nTo use Stash's **Installed Plugins → Update** feature, install Booru Importer through the plugin source URL above. A source-installed package keeps the repository association Stash uses to discover newer published packages. The plugin's internal ID intentionally remains **`DanbooruTagImporter`**, so a newer package updates the existing installation instead of appearing as a second plugin.\n\nWhen a newer package is published, refresh plugin sources if needed, then open **Installed Plugins** and use **Update** for Booru Importer.\n\nManual GitHub Release ZIP installs remain supported as a fallback, but a manually copied plugin may not have a plugin-source association for one-click updates. If you originally installed manually and want future built-in updates, install Booru Importer from the source URL once.\n\nThe exact button names may vary slightly between Stash versions.",
+              "root README built-in update guidance",
+          )
+
+          technical = Path("plugins/DanbooruTagImporter/README.md")
+          replace_once(
+              technical,
+              "## Installation\n\nPlace the plugin directory in Stash's plugin directory, then use **Settings -> Plugins -> Reload Plugins**, or install it through a compatible Stash plugin source when published there.\n\nFor manual installation, the directory should contain at least:",
+              "## Installation\n\nFor normal installation and future one-click updates, add this plugin source in **Stash → Settings → Plugins**:\n\n```text\nhttps://purpsll.github.io/Booru-Tagger/main/index.yml\n```\n\nInstall **Booru Importer** from that source. Source-installed packages retain the repository association Stash uses for **Installed Plugins → Update**. The stable internal plugin ID is intentionally kept as `DanbooruTagImporter`; changing that ID would break update continuity and could make Stash treat a release as a different plugin.\n\nManual installation is still supported by copying the `DanbooruTagImporter` directory into Stash's plugin directory and using **Settings → Plugins → Reload Plugins**, but a manually copied install may not be associated with the source repository for one-click updates.\n\nFor manual installation, the directory should contain at least:",
+              "technical README installation/update guidance",
+          )
+          PY
+
+      - name: Validate plugin and source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+          rm -rf /tmp/booru-site
+          bash build_site.sh /tmp/booru-site
+          grep -q '^\- id: DanbooruTagImporter$' /tmp/booru-site/index.yml
+          grep -q '^  name: Booru Importer$' /tmp/booru-site/index.yml
+          grep -q '^  version: 3.26.4-' /tmp/booru-site/index.yml
+          grep -q '^  path: DanbooruTagImporter.zip$' /tmp/booru-site/index.yml
+          unzip -p /tmp/booru-site/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^id: DanbooruTagImporter$'
+          unzip -p /tmp/booru-site/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^name: Booru Importer$'
+          unzip -p /tmp/booru-site/DanbooruTagImporter.zip DanbooruTagImporter.yml | grep -q '^version: 3.26.4$'
+          cat /tmp/booru-site/index.yml
+
+      - name: Commit documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md plugins/DanbooruTagImporter/README.md
+          git diff --cached --check
+          git commit -m 'Document Stash built-in plugin updates'
+          git push origin HEAD:main
