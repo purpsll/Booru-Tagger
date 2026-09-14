@@ -87,34 +87,43 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.6
+          ## Booru Importer v3.26.8
 
-          This patch release adds provider-aware e621 pacing so Deep Match stays below e621's published request limits while preserving per-image retries.
+          This hardening release keeps the important reverse-search providers active during long Deep Match queues while reducing repetitive warning noise.
 
-          ### e621 IQDB rate-limit handling
+          ### SauceNAO reliability
 
-          - **Every image remains eligible for e621 IQDB.** A 429, Cloudflare challenge, timeout, or other transient failure affects only the current image and never disables e621 for the rest of the queue.
-          - **Authenticated IQDB uploads are paced at least 2 seconds apart.** This stays conservatively below e621's current heavy file-search allowance.
-          - **Anonymous IQDB uploads are paced at least 65 seconds apart.** This respects the much stricter anonymous file-search allowance.
-          - **Ordinary e621 API traffic is paced to at most 1 request per second.**
-          - **Adaptive 429 backoff.** `Retry-After` is honored when present; otherwise repeated 429/Cloudflare responses progressively back off the next e621 IQDB attempt, capped at 60 seconds.
-          - **No same-image upload retries.** A failed visual upload remains Retry Later so one image cannot stall the queue for minutes.
-          - **Conservative state handling remains.** A transient e621 failure never becomes a false permanent No Match.
+          - **SauceNAO stays eligible for every image.** HTTP 520–524 failures no longer disable or skip SauceNAO for a 180-second block of the queue.
+          - **Short adaptive outage pacing.** After a 52x response, the next SauceNAO image search waits 5 seconds; repeated consecutive outages back off to 10 and then 20 seconds, capped at 20 seconds.
+          - **Automatic recovery.** A successful SauceNAO request reduces the outage streak so the provider returns toward normal account/quota pacing.
+          - **One outage warning per status.** Repeated identical 52x warnings are suppressed while per-image results remain visible at INFO level.
+          - **429 handling remains quota-aware.** SauceNAO still honors its account-reported short/long limits and pauses on real rate-limit responses without becoming a false No Match.
+
+          ### e621 IQDB hardening
+
+          - Authenticated e621 IQDB uploads use a 3-second base interval.
+          - 429/Cloudflare failures remain image-local; the next image is still eligible for e621 IQDB.
+          - Recovery from a throttled interval is gradual rather than immediately returning to the base rate after one successful request.
+          - Anonymous IQDB retains the conservative 65-second floor.
+
+          ### Cleaner Deep Match logging
+
+          - Per-image **RETRY LATER** lines are now INFO-level operational state rather than repeated warnings.
+          - The actual provider failure is still surfaced as a warning once, so genuine outages remain visible without flooding the Stash log.
+          - Retry Later still never writes a persistent No Match marker.
 
           ### Behavior retained
 
-          - Deep Match skips completed Fast Scan MD5/pHash work for normal Unresolved images.
-          - Reverse-search uploads use Stash's generated 640px thumbnail instead of the full-resolution original.
-          - Danbooru IQDB remains first; e621 IQDB and SauceNAO may run concurrently after a Danbooru miss.
-          - Automatic-match and Review thresholds are unchanged.
-          - `conditional_dnp` and `third-party_edit` remain ignored as artist metadata.
+          - Danbooru IQDB remains first; e621 IQDB and SauceNAO run after a Danbooru miss when configured.
+          - Reverse-search uploads use Stash's generated 640px thumbnail rather than the original full-resolution image.
+          - Existing match/review confidence thresholds are unchanged.
           - The stable internal package ID remains `DanbooruTagImporter` for Stash's **Installed Plugins → Update** flow.
 
           ### Validation
 
-          - Full regression suite passes with **84 tests**.
-          - Dedicated tests cover authenticated pacing, anonymous pacing, `Retry-After`, per-image e621 retry, warning de-duplication, and host-circuit reset behavior.
-          - The release workflow validates the complete suite again before packaging.
+          - Full regression suite passes with **89 tests**.
+          - Dedicated tests prove that SauceNAO HTTP 521 affects only the current image, the next image searches SauceNAO again, 52x warnings are de-duplicated, and adaptive 5/10/20-second backoff is bounded.
+          - Existing e621, quota, state-safety, metadata, and package/update tests also pass.
 
           ### Recommended installation / update
 
@@ -122,11 +131,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.6** as an update after refreshing plugin sources if needed.
+          Existing source-based users should see **Booru Importer 3.26.8** as an update after refreshing plugin sources if needed.
 
           ### Manual installation from GitHub Releases
 
-          Download **`Booru-Importer-v3.26.6.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.8.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
           EOF
 
       - name: Update initial public release notes
