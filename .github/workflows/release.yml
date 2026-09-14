@@ -1,0 +1,143 @@
+name: Publish Booru Importer Release
+
+on:
+  push:
+    paths:
+      - '.github/workflows/release.yml'
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x build_site.sh
+          ./build_site.sh _release
+          VERSION="$(grep '^version:' plugins/DanbooruTagImporter/DanbooruTagImporter.yml | head -1 | awk '{print $2}')"
+          cp _release/DanbooruTagImporter.zip "Booru-Importer-v${VERSION}.zip"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "ASSET=Booru-Importer-v${VERSION}.zip" >> "$GITHUB_ENV"
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > release-v3.26.0.md <<'EOF'
+          ## Booru Importer v3.26.0 — Initial Public Release
+
+          The first public release of **Booru Importer**, a Stash plugin that identifies images using Danbooru, Gelbooru, Rule34, e621, and optional reverse-image-search services, then imports useful metadata into Stash.
+
+          ### Included in this release
+
+          - Renamed the public-facing plugin to **Booru Importer** while keeping the internal `DanbooruTagImporter` ID for compatibility.
+          - Corrected the repository layout for the Stash plugin-source format and GitHub Pages publishing.
+          - Added a user-friendly repository README and plugin-source installation instructions.
+          - Fast Scan uses exact MD5 lookups and trusted local pHash reuse before slower searches.
+          - Deep Match can use Danbooru IQDB, e621 IQDB, and SauceNAO for unresolved images.
+          - Imports booru tags and source URLs and fills a missing source date when available.
+          - Maps booru **characters to Stash Performers** and **artists to Stash Studios**.
+          - Uses conservative fuzzy matching to reuse similar existing Studios, Performers, and tags instead of creating obvious duplicates.
+          - SauceNAO request pacing can be configured and automatically adapts to account-reported limits, including paid/upgraded accounts.
+          - Existing ordinary Stash metadata is preserved; the plugin does not replace or download source image files.
+          - Provider rate limits and temporary failures remain retryable instead of creating false permanent no-match results.
+
+          ### Installation
+
+          Add this source in **Stash → Settings → Plugins**:
+
+          `https://purpsll.github.io/Booru-Tagger/main/index.yml`
+
+          Then refresh Available Plugins and install **Booru Importer**.
+          EOF
+
+          cat > release-current.md <<'EOF'
+          ## Booru Importer v3.26.1
+
+          This patch release is based on the tested 3.26.0 public release and contains the Studio-selection fix added after publication.
+
+          ### Fixed
+
+          - `conditional_dnp` is now treated as a placeholder artist and **will never be selected or created as a Stash Studio**.
+          - If `conditional_dnp` appears first in an artist list, Booru Importer skips it and selects the **next real artist in the original order** as the Studio.
+          - The comparison is case-insensitive and ignores surrounding whitespace.
+          - Added a regression test that recreates a Gelbooru result containing `conditional_dnp` followed by a real artist and verifies the real artist becomes the Studio.
+
+          ### Validation and release cleanup
+
+          - Full regression suite passes with **70 tests**.
+          - Removed generated Python `__pycache__` / `.pyc` files from the public repository.
+          - Added `.gitignore` rules so generated Python and test-cache files are not included in future releases.
+          - The downloadable ZIP is built from the same current plugin source used by the Stash repository feed.
+
+          ### Existing behavior retained
+
+          - Danbooru, Gelbooru, Rule34, and e621 metadata matching.
+          - Fast Scan and Deep Match workflow.
+          - Tags, source URL, source date, character → Performer, and artist → Studio mapping.
+          - Configurable/account-aware SauceNAO pacing.
+          - Conservative duplicate matching for Studios, Performers, and tags.
+          - Existing Stash metadata is preserved.
+
+          ### Installation / update
+
+          Add or refresh this source in **Stash → Settings → Plugins**:
+
+          `https://purpsll.github.io/Booru-Tagger/main/index.yml`
+
+          Existing users should see **Booru Importer 3.26.1** as an update.
+          EOF
+
+      - name: Update initial public release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit Public_Release \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Booru Importer v3.26.0 (Initial Public Release)" \
+            --notes-file release-v3.26.0.md
+
+      - name: Publish current version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag -f "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG" --force
+          else
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Booru Importer v${VERSION}" \
+              --notes-file release-current.md \
+              --latest
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Booru Importer v${VERSION}" \
+              --notes-file release-current.md \
+              --latest
+          fi
+
+          gh release upload "$TAG" "$ASSET" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
