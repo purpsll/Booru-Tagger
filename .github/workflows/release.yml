@@ -88,23 +88,24 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.2
+          ## Booru Importer v3.26.3
 
-          This patch release fixes multi-artist metadata handling so artist information is not lost when a source post credits more than one artist.
+          This patch release expands the artist-exclusion policy so known non-artist markers cannot become Studio metadata or leak back into image tags.
 
           ### Fixed
 
-          - The **first usable artist** continues to become the image's Stash Studio.
-          - **Every additional usable artist is now preserved as a normal Stash tag** instead of being dropped.
-          - The policy works with Danbooru/e621 structured artist metadata and Gelbooru/Rule34 flat tag lists.
-          - `conditional_dnp` remains excluded from artist metadata: it cannot become the Studio and is not added as a secondary-artist tag.
-          - If `conditional_dnp` appears before real artists, the first real artist becomes the Studio and later real artists become tags.
-          - Added a regression test covering `conditional_dnp`, a primary artist, multiple secondary artists, and a normal tag in the same Gelbooru result.
+          - When **`third-party_edit` appears as artist metadata**, it is ignored completely.
+          - `third-party_edit` will **not** be selected or created as the image Studio.
+          - `third-party_edit` will **not** be added or re-added as an ordinary Stash tag when it was identified as an artist-category value.
+          - `conditional_dnp` remains subject to the same ignore policy.
+          - The first usable artist still becomes the image Studio, and every additional usable artist is preserved as a normal Stash tag.
+          - The exclusion is enforced for both Danbooru/e621 structured artist metadata and Gelbooru/Rule34 flat tag lists.
+          - Added separate regression tests for flat-source and structured-source `third-party_edit` handling.
 
           ### Validation
 
-          - Full regression suite passes with **71 tests**.
-          - Existing matching thresholds, five-task workflow, rate-limit handling, SauceNAO account-aware pacing, and metadata-preservation behavior remain unchanged.
+          - Full regression suite passes with **73 tests**.
+          - Existing matching thresholds, five-task workflow, rate-limit handling, SauceNAO account-aware pacing, multi-artist preservation, and metadata-preservation behavior remain unchanged.
           - The downloadable release ZIP contains a ready-to-copy `DanbooruTagImporter/` folder for manual installation.
 
           ### Recommended installation / update
@@ -113,11 +114,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.2** as an update.
+          Existing source-based users should see **Booru Importer 3.26.3** as an update.
 
           ### Manual installation from GitHub Releases
 
-          1. Under **Assets**, download **`Booru-Importer-v3.26.2.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
+          1. Under **Assets**, download **`Booru-Importer-v3.26.3.zip`**. Do not use GitHub's automatically generated **Source code** archives for the simplest manual install.
           2. Extract the ZIP. It contains a top-level **`DanbooruTagImporter`** folder.
           3. Copy that entire folder into your Stash plugins directory.
           4. The final path should look like: **`<Stash plugins>/DanbooruTagImporter/DanbooruTagImporter.yml`**.
