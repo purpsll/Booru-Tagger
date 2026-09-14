@@ -1,5 +1,5 @@
 name: Booru Importer
-description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Fast Scan handles exact matches; Deep Match uses bandwidth-efficient visual search and retries e621 IQDB independently for each image.
+description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Fast Scan handles exact matches; Deep Match uses bandwidth-efficient, provider-aware visual search with rate-aware e621 IQDB retries.
 version: 3.26.6
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=2s, anonymous uploads at >=65s, with adaptive post-429 backoff.
@@ -44,12 +44,12 @@ settings:
 
   e621_username:
     displayName: e621 username
-    description: Optional but recommended. Used in the identifying e621 User-Agent and with the API key for authenticated requests.
+    description: Strongly recommended for Deep Match. Used in the identifying e621 User-Agent and with the API key for authenticated requests. Authenticated IQDB file searches can run far more frequently than anonymous file searches.
     type: STRING
 
   e621_api_key:
     displayName: e621 API key
-    description: Optional e621 API key for authenticated requests. Never written to plugin logs.
+    description: Strongly recommended with the e621 username for authenticated Deep Match IQDB requests. Never written to plugin logs.
     type: STRING
 
   saucenao_api_key:
