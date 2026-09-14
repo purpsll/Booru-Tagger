@@ -51,7 +51,7 @@ Use this method if you would rather download a ZIP yourself.
 3. Under **Assets**, download the file named like:
 
    ```text
-   Booru-Importer-v3.26.3.zip
+   Booru-Importer-vX.Y.Z.zip
    ```
 
    Future releases will use the same naming pattern with a newer version number.
@@ -113,6 +113,8 @@ For images that Fast Scan cannot identify, **Deep Match** can use reverse-image-
 This is slower, but it can find images that have been resized, recompressed, cropped, or otherwise changed from the version stored on the original booru.
 
 Booru Importer only accepts strong matches automatically. Less-certain matches can be placed into a **Review** state instead of being treated as definite.
+
+In **v3.26.4**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. This speeds up large unresolved queues without lowering the existing confidence thresholds.
 
 ---
 
@@ -200,7 +202,7 @@ Fast Scan primarily sends an image fingerprint such as its **MD5 hash** to suppo
 
 ### Deep Match
 
-Deep Match may send the image itself to configured reverse-image-search services such as **Danbooru IQDB, e621 IQDB, or SauceNAO** so they can look for visually similar images.
+Deep Match sends a **Stash-generated 640px thumbnail**—not the original full-resolution image—to configured reverse-image-search services such as **Danbooru IQDB, e621 IQDB, or SauceNAO** so they can look for visually similar images.
 
 If this matters for your library, use Fast Scan only or review the privacy policies and terms of the services you enable before using Deep Match.
 

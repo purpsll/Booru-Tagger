@@ -16,7 +16,7 @@ v3.26.4 substantially improves Deep Match throughput. Images already marked Unre
 
 ## Requirements
 
-- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during the v3.23 cycle; the v3.24/v3.25 public-release changes are covered by the automated regression suite and should receive one final live smoke test before publication.
+- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during development, and the v3.26.4 release workflow runs the full automated regression suite before packaging the public release.
 - Python available as `python` in the environment where Stash launches plugins.
 - No pip packages are required; the plugin uses only Python's standard library.
 
@@ -59,11 +59,12 @@ Optional safety preview of the next ten Unresolved images. It performs the same 
 
 Processes only images carrying `Multi-Booru Unresolved`.
 
-After exact MD5 and local pHash source reuse, it tries the configured visual-search stages:
+For images already marked `Multi-Booru Unresolved` by the normal Fast Scan, v3.26.4 reuses that completed fast-stage result instead of repeating exact MD5 and local pHash lookups. Forced rechecks such as Review and No-Match retries still reevaluate the full lookup path.
+
+Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and SauceNAO (when configured) are launched concurrently:
 
 1. Danbooru IQDB, when Danbooru credentials are configured
-2. e621 IQDB
-3. SauceNAO, when an API key is configured
+2. e621 IQDB and SauceNAO in parallel, when their respective stages are enabled/configured
 
 Results:
 
@@ -104,6 +105,10 @@ State transitions remove the old plugin status marker without removing ordinary 
 - SauceNAO REVIEW auto-accept: off
 - SauceNAO polling: adaptive to the account-reported `short_limit` (roughly a 30-second quota window); optional user ceiling via **SauceNAO searches per 30 seconds**
 - SauceNAO long-term quota: account-reported `long_limit` / `long_remaining` is tracked so exhausted accounts do not produce false No Match results
+- Deep visual-search payload: Stash-generated 640px thumbnail rather than the original full-resolution image
+- Deep visual-search timeout: 30 seconds per request with no inline upload retries; transient failures remain retryable
+- After Danbooru IQDB misses, e621 IQDB and SauceNAO may run concurrently with at most 2 visual-search workers
+- SauceNAO HTTP 520–524: 180-second SauceNAO-only outage cooldown while other providers continue
 - General external-provider minimum spacing: 250 ms per host
 - Danbooru long-running spacing: approximately 1 second per request
 - HTTP retries: 2 with bounded exponential backoff, jitter, and `Retry-After`
@@ -127,7 +132,7 @@ This plugin talks to third-party services. Users should understand what leaves t
 
 - **Fast mode:** sends the image's MD5 hash to the active booru metadata APIs. It does not send the image bytes to reverse-image-search services.
 - **pHash reuse:** pHash comparison itself is local. If it finds a trusted local reference, the plugin requests the referenced booru post metadata by post ID/URL; it does not upload the local image for that step.
-- **Deep Match:** may send the existing Stash image bytes in-memory to Danbooru IQDB, e621 IQDB, and SauceNAO when those stages are active. The plugin does not save a duplicate image locally and does not download a replacement/source image.
+- **Deep Match:** sends a Stash-generated 640px thumbnail in-memory to Danbooru IQDB, e621 IQDB, and SauceNAO when those stages are active, rather than uploading the original full-resolution image. The plugin does not save a duplicate image locally and does not download a replacement/source image.
 - **SauceNAO:** its published privacy policy states that uploaded query images are normally stored in full and thumbnail form for a short period, generally less than half an hour, then deleted. Users should review the provider's current privacy policy and terms before enabling SauceNAO.
 - API credentials are never intentionally written to plugin logs. Danbooru authenticated requests use HTTP Basic authentication so its API key is not placed in request URLs.
 
@@ -174,4 +179,4 @@ The regression suite covers provider failure classification, Rule34 cooldown beh
 
 ## Publishing / maintenance
 
-Before publishing from your own repository, set the plugin manifest's project/support URL to your repository or support page and choose an explicit software license. If contributing to Stash CommunityScripts, follow that repository's current contribution and AI-assistance policies and perform your own manual review/testing of the code.
+The public repository publishes Stash source packages through GitHub Pages and manual-install ZIPs through GitHub Releases. The release workflow runs the full regression suite before packaging. Keep `VERSION` in `constants.py` synchronized with `version:` in `DanbooruTagImporter.yml`, and update the release notes whenever user-visible behavior changes.
