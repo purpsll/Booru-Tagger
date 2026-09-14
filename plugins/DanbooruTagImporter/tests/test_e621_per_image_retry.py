@@ -48,6 +48,9 @@ def unresolved_image(image_id):
 class E621PerImageRetryTests(unittest.TestCase):
     def setUp(self):
         plugin._PROVIDER_WARNING_ONCE.clear()
+        plugin._E621_IQDB_LAST_REQUEST_AT = 0.0
+        plugin._E621_IQDB_BACKOFF_UNTIL = 0.0
+        plugin._E621_IQDB_CONSECUTIVE_RATE_LIMITS = 0
 
     def _process(self, image_id):
         return plugin.process_image(
@@ -115,6 +118,38 @@ class E621PerImageRetryTests(unittest.TestCase):
         self.assertEqual(state.consecutive_failures, 0)
         self.assertEqual(state.circuit_open_until, 0.0)
         self.assertEqual(state.next_allowed_at, next_allowed)
+
+    def test_authenticated_iqdb_pacing_uses_two_second_floor(self):
+        plugin._E621_IQDB_LAST_REQUEST_AT = 100.0
+        with mock.patch.object(plugin.time, "monotonic", side_effect=[100.5, 102.0]), \
+             mock.patch.object(plugin.time, "sleep") as sleeper:
+            interval = plugin._e621_iqdb_wait_for_slot("user", "key")
+
+        self.assertEqual(interval, plugin.E621_IQDB_AUTH_MIN_INTERVAL_SECONDS)
+        sleeper.assert_called_once_with(1.5)
+        self.assertEqual(plugin._E621_IQDB_LAST_REQUEST_AT, 102.0)
+
+    def test_anonymous_iqdb_pacing_uses_sixty_five_second_floor(self):
+        self.assertEqual(
+            plugin._e621_iqdb_min_interval("", ""),
+            plugin.E621_IQDB_ANON_MIN_INTERVAL_SECONDS,
+        )
+        self.assertGreaterEqual(plugin.E621_IQDB_ANON_MIN_INTERVAL_SECONDS, 60.0)
+
+    def test_e621_429_respects_retry_after_without_disabling_next_image(self):
+        error = __import__("urllib.error").error.HTTPError(
+            "https://e621.net/iqdb_queries.json", 429, "rate", {"Retry-After": "7"}, None
+        )
+        with mock.patch.object(plugin.time, "monotonic", return_value=100.0):
+            delay = plugin._e621_iqdb_note_rate_limit(error, "user", "key")
+
+        self.assertEqual(delay, 7.0)
+        self.assertEqual(plugin._E621_IQDB_BACKOFF_UNTIL, 107.0)
+        self.assertEqual(plugin._E621_IQDB_CONSECUTIVE_RATE_LIMITS, 1)
+
+        plugin._e621_iqdb_note_success()
+        self.assertEqual(plugin._E621_IQDB_BACKOFF_UNTIL, 0.0)
+        self.assertEqual(plugin._E621_IQDB_CONSECUTIVE_RATE_LIMITS, 0)
 
 
 if __name__ == "__main__":

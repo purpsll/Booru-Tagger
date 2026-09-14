@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import email.utils
 import re
 import unicodedata
 import json
@@ -40,7 +41,10 @@ from constants import (
     ARTIST_MAPPING, AUTO_IMPORT_NEW_IMAGES, CHARACTER_MAPPING,
     CREATE_SECONDARY_ARTIST_STUDIOS, DANBOORU_BASE, DANBOORU_IQDB_MIN_SCORE,
     DEEP_VISUAL_HTTP_RETRIES, DEEP_VISUAL_MAX_WORKERS, DEEP_VISUAL_TIMEOUT_SECONDS,
-    E621_BASE, E621_IQDB_MIN_SCORE, ENABLE_DANBOORU, ENABLE_DANBOORU_IQDB,
+    E621_BASE, E621_GENERAL_MIN_INTERVAL_SECONDS, E621_IQDB_ANON_MIN_INTERVAL_SECONDS,
+    E621_IQDB_AUTH_MIN_INTERVAL_SECONDS, E621_IQDB_MIN_SCORE,
+    E621_IQDB_RATE_LIMIT_BACKOFF_SECONDS, E621_IQDB_RATE_LIMIT_MAX_BACKOFF_SECONDS,
+    ENABLE_DANBOORU, ENABLE_DANBOORU_IQDB,
     ENABLE_E621, ENABLE_E621_IQDB, ENABLE_GELBOORU, ENABLE_LOCAL_PHASH_REUSE,
     ENABLE_RULE34, ENABLE_SAUCENAO, ENTITY_SIMILARITY_MARGIN, EXCLUDED_EXTENSIONS,
     GELBOORU_BASE, HTTP_CIRCUIT_COOLDOWN_SECONDS, HTTP_CIRCUIT_FAILURE_THRESHOLD,
@@ -74,8 +78,18 @@ _SAUCENAO_QUOTA_PAUSES = 0
 _SAUCENAO_QUOTA_ANNOUNCED = False
 _SAUCENAO_OUTAGE_UNTIL = 0.0
 _E621_IQDB_RATE_LIMIT_HITS = 0
+_E621_IQDB_LAST_REQUEST_AT = 0.0
+_E621_IQDB_BACKOFF_UNTIL = 0.0
+_E621_IQDB_CONSECUTIVE_RATE_LIMITS = 0
 _RULE34_COOLDOWN_ANNOUNCED = False
 _PROVIDER_WARNING_ONCE: set[tuple[str, str]] = set()
+
+# Keep ordinary e621 API traffic below the documented hard ceiling. IQDB file
+# uploads use their own stricter pacing below.
+HTTP.set_host_interval(
+    (urllib.parse.urlparse(E621_BASE).hostname or "e621.net").casefold(),
+    E621_GENERAL_MIN_INTERVAL_SECONDS,
+)
 
 
 _STASH_LOG_LEVEL_CHARS = {
@@ -480,6 +494,75 @@ def e621_post_by_id(post_id: str, username: str = "", api_key: str = "") -> Opti
 
 
 
+def _e621_iqdb_is_authenticated(username: str, api_key: str) -> bool:
+    return bool(str(username or "").strip() and str(api_key or "").strip())
+
+
+def _e621_iqdb_min_interval(username: str, api_key: str) -> float:
+    return float(
+        E621_IQDB_AUTH_MIN_INTERVAL_SECONDS
+        if _e621_iqdb_is_authenticated(username, api_key)
+        else E621_IQDB_ANON_MIN_INTERVAL_SECONDS
+    )
+
+
+def _e621_retry_after_seconds(exc: urllib.error.HTTPError) -> float:
+    raw = exc.headers.get("Retry-After") if exc.headers else None
+    if not raw:
+        return 0.0
+    raw = str(raw).strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _e621_iqdb_wait_for_slot(username: str, api_key: str) -> float:
+    """Pace heavy e621 IQDB file uploads without disabling later images."""
+    global _E621_IQDB_LAST_REQUEST_AT
+    interval = _e621_iqdb_min_interval(username, api_key)
+    now = time.monotonic()
+    wait_for = max(0.0, _E621_IQDB_BACKOFF_UNTIL - now)
+    if _E621_IQDB_LAST_REQUEST_AT > 0:
+        wait_for = max(wait_for, (_E621_IQDB_LAST_REQUEST_AT + interval) - now)
+    if wait_for > 0:
+        time.sleep(wait_for)
+    _E621_IQDB_LAST_REQUEST_AT = time.monotonic()
+    return interval
+
+
+def _e621_iqdb_note_rate_limit(
+    exc: urllib.error.HTTPError, username: str, api_key: str
+) -> float:
+    """Delay only the next e621 IQDB attempt after a 429/challenge."""
+    global _E621_IQDB_BACKOFF_UNTIL, _E621_IQDB_CONSECUTIVE_RATE_LIMITS
+    _E621_IQDB_CONSECUTIVE_RATE_LIMITS += 1
+    minimum = _e621_iqdb_min_interval(username, api_key)
+    adaptive = min(
+        float(E621_IQDB_RATE_LIMIT_MAX_BACKOFF_SECONDS),
+        float(E621_IQDB_RATE_LIMIT_BACKOFF_SECONDS)
+        * (2 ** max(0, _E621_IQDB_CONSECUTIVE_RATE_LIMITS - 1)),
+    )
+    delay = max(minimum, adaptive, _e621_retry_after_seconds(exc))
+    _E621_IQDB_BACKOFF_UNTIL = max(
+        _E621_IQDB_BACKOFF_UNTIL, time.monotonic() + delay
+    )
+    return delay
+
+
+def _e621_iqdb_note_success() -> None:
+    global _E621_IQDB_BACKOFF_UNTIL, _E621_IQDB_CONSECUTIVE_RATE_LIMITS
+    _E621_IQDB_BACKOFF_UNTIL = 0.0
+    _E621_IQDB_CONSECUTIVE_RATE_LIMITS = 0
+
+
 def e621_iqdb(
     image_bytes: bytes,
     username: str,
@@ -494,6 +577,7 @@ def e621_iqdb(
     """
     e621_host = (urllib.parse.urlparse(E621_BASE).hostname or "e621.net").casefold()
     HTTP.clear_host_failures(e621_host)
+    _e621_iqdb_wait_for_slot(username, api_key)
     boundary = "----StashE621IQDBBoundary7MA4YWxkTrZu0gW"
     chunks: List[bytes] = []
 
@@ -530,9 +614,11 @@ def e621_iqdb(
         with HTTP.urlopen(
             req,
             timeout=DEEP_VISUAL_TIMEOUT_SECONDS,
+            min_interval=0.0,
             retries=DEEP_VISUAL_HTTP_RETRIES,
         ) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
+        _e621_iqdb_note_success()
     except urllib.error.HTTPError as exc:
         global _E621_IQDB_RATE_LIMIT_HITS
         detail = exc.read().decode("utf-8", errors="replace")
@@ -549,6 +635,7 @@ def e621_iqdb(
 
         if exc.code == 429 or cloudflare_challenge:
             _E621_IQDB_RATE_LIMIT_HITS += 1
+            _e621_iqdb_note_rate_limit(exc, username, api_key)
             reason = f"HTTP {exc.code}" + (
                 " / Cloudflare challenge" if cloudflare_challenge else ""
             )
