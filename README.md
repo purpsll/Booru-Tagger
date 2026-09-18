@@ -118,9 +118,9 @@ For images that Fast Scan cannot identify, **Deep Match** can use reverse-image-
 
 This is slower, but it can find images that have been resized, recompressed, cropped, or otherwise changed from the version stored on the original booru.
 
-Booru Importer only accepts strong matches automatically. Less-certain SauceNAO matches from 85–94.99% are placed into a **Review** state instead of being treated as definite. On the individual Stash image page, Booru Importer shows the proposed source URL with **Yes** and **No** controls.
+Booru Importer only accepts strong matches automatically. Less-certain SauceNAO matches from 85–94.99% are placed into a **Review** state instead of being treated as definite. On the individual Stash image page, Booru Importer shows the proposed source URL with **Yes** and **No** controls. **v3.26.11 fixes the Stash v0.31.1 React patch signature used by these controls, preventing the image-detail page from trying to render React's empty context object.**
 
-In **v3.26.10**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues while keeping automatic SauceNAO imports at 95%+; the Review floor is 85% so lower-confidence candidates require an explicit Yes/No decision.
+In **v3.26.11**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues while keeping automatic SauceNAO imports at 95%+; the Review floor is 85% so lower-confidence candidates require an explicit Yes/No decision.
 
 ---
 
