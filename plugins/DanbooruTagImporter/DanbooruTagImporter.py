@@ -3651,10 +3651,12 @@ def process_image(
         usable_artists if artist_mapping in {"studios", "both"} else []
     )
 
-    # Gelbooru/Rule34 start with one flat source tag list. If a value is known to
-    # be an ignored artist marker, remove it before any mapping policy can turn it
-    # back into an ordinary Stash tag.
-    if source in {"gelbooru", "rule34"} and artists:
+    # Flat-tag boorus expose one source tag list. If a value is known to be an
+    # artist marker, keep the configured artist mapping from also leaving it as
+    # an ordinary tag. Separator/case normalization covers SauceNAO names such as
+    # "artist name" versus a site tag "artist_name".
+    flat_tag_source = source in {"gelbooru", "rule34", "konachan", "yandere"}
+    if flat_tag_source and artists:
         ignored_source_artist_keys = {
             str(artist).strip().casefold() for artist in artists
             if str(artist).strip().casefold() in ignored_artist_keys
@@ -3673,12 +3675,12 @@ def process_image(
                 names.append(artist)
                 existing_name_keys.add(artist.casefold())
     elif artist_mapping == "studios":
-        if source in {"gelbooru", "rule34"} and artists:
+        if flat_tag_source and artists:
             # Artist-category entries are removed from the flat source tag list.
             # The first usable artist becomes the Studio; later usable artists
             # are re-added below as ordinary image tags.
-            artist_keys = {a.casefold() for a in artists}
-            names = [n for n in names if n.casefold() not in artist_keys]
+            artist_keys = {normalized_tag_key(a) for a in artists}
+            names = [n for n in names if normalized_tag_key(n) not in artist_keys]
 
         # A Stash image has one Studio slot. Preserve every additional usable
         # artist as an image tag instead of silently dropping that metadata.
@@ -3694,9 +3696,9 @@ def process_image(
             if character.casefold() not in existing_name_keys:
                 names.append(character)
                 existing_name_keys.add(character.casefold())
-    elif source in {"gelbooru", "rule34"} and characters:
-        character_keys = {p.casefold() for p in characters}
-        names = [n for n in names if n.casefold() not in character_keys]
+    elif flat_tag_source and characters:
+        character_keys = {normalized_tag_key(p) for p in characters}
+        names = [n for n in names if normalized_tag_key(n) not in character_keys]
 
     performers = characters if character_mapping in {"performers", "both"} else []
     studio_targets = (
