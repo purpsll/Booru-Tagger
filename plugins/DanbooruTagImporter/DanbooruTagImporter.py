@@ -2057,6 +2057,44 @@ def _non_status_tag_ids(image: Dict[str, Any]) -> List[str]:
     ]
 
 
+_REVIEW_CONFIDENCE_FRAGMENT_KEY = "booru-importer-review-confidence"
+
+
+def _review_candidate_parts(url: str) -> Tuple[str, Optional[float]]:
+    """Return the canonical candidate URL plus an optional persisted SauceNAO score."""
+    text = str(url or "").strip()
+    if not text:
+        return "", None
+    parts = urllib.parse.urlsplit(text)
+    fragment_values = urllib.parse.parse_qs(parts.fragment, keep_blank_values=True)
+    raw_score = (fragment_values.get(_REVIEW_CONFIDENCE_FRAGMENT_KEY) or [None])[0]
+    if raw_score is None:
+        return text, None
+    try:
+        score = max(0.0, min(100.0, float(raw_score)))
+    except (TypeError, ValueError):
+        score = None
+    canonical = urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, parts.query, "")
+    )
+    return canonical, score
+
+
+def _review_candidate_storage_url(url: str, confidence: Optional[float]) -> str:
+    """Persist Review confidence in a URL fragment without changing the source request."""
+    canonical, _ = _review_candidate_parts(url)
+    if not canonical or confidence is None:
+        return canonical
+    score = max(0.0, min(100.0, float(confidence)))
+    parts = urllib.parse.urlsplit(canonical)
+    fragment = urllib.parse.urlencode(
+        {_REVIEW_CONFIDENCE_FRAGMENT_KEY: f"{score:.1f}"}
+    )
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, parts.query, fragment)
+    )
+
+
 def transition_image_status(
     stash: Stash,
     image: Dict[str, Any],
@@ -2066,12 +2104,14 @@ def transition_image_status(
     similarity_buckets: Dict[Tuple[str, int], List[Tuple[str, Dict[str, str]]]],
     *,
     extra_url: Optional[str] = None,
+    review_confidence: Optional[float] = None,
     dry_run: bool = False,
 ) -> bool:
     """Set exactly one Multi-Booru workflow marker while preserving user metadata.
 
     Status markers are mutually exclusive. ``extra_url`` is used for REVIEW so the
-    candidate source can be opened directly from the Stash image.
+    candidate source can be opened directly from the Stash image. Review confidence is
+    persisted only in an internal URL fragment that the UI hides from the visible link.
     """
     if marker_name not in STATUS_MARKER_TAGS:
         raise ValueError(f"Unknown workflow marker: {marker_name}")
@@ -2089,6 +2129,8 @@ def transition_image_status(
     target_urls: Optional[List[str]] = None
     if extra_url:
         url = str(extra_url).strip()
+        if url and marker_name == REVIEW_MARKER_TAG:
+            url = _review_candidate_storage_url(url, review_confidence)
         if url:
             # REVIEW uses URL ordering to identify the active proposed candidate in
             # the image-page UI. Preserve every other URL, de-duplicate the candidate,
@@ -2952,6 +2994,7 @@ def process_image(
                     stash, image, REVIEW_MARKER_TAG, tag_cache,
                     normalized_tag_index, similarity_buckets,
                     extra_url=review_candidate_url or None,
+                    review_confidence=review_candidate_score,
                 )
             return "review_candidate"
 
@@ -3080,7 +3123,33 @@ def process_image(
 
     current_studio = image.get("studio")
     current_date = str(image.get("date") or "").strip()
-    current_urls = [str(u).strip() for u in (image.get("urls") or []) if str(u).strip()]
+    original_current_urls = [
+        str(u).strip() for u in (image.get("urls") or []) if str(u).strip()
+    ]
+    current_urls = list(original_current_urls)
+    if match_method == "manual_review" and approved_source_url:
+        approved_canonical_url, _approved_review_score = _review_candidate_parts(
+            approved_source_url
+        )
+        if approved_canonical_url:
+            normalized_urls: List[str] = []
+            seen_urls: set[str] = set()
+            approved_storage_key = approved_source_url.casefold()
+            approved_canonical_key = approved_canonical_url.casefold()
+            for existing_url in current_urls:
+                candidate = (
+                    approved_canonical_url
+                    if existing_url.casefold() == approved_storage_key
+                    else existing_url
+                )
+                key = candidate.casefold()
+                if key in seen_urls:
+                    continue
+                seen_urls.add(key)
+                normalized_urls.append(candidate)
+            if approved_canonical_key not in seen_urls:
+                normalized_urls.append(approved_canonical_url)
+            current_urls = normalized_urls
     current_url_keys = {u.casefold() for u in current_urls}
     desired_source_url = source_post_url(source, post)
     desired_source_date = source_post_date(source, post)
@@ -3227,7 +3296,7 @@ def process_image(
     marker_id = ensure_import_marker_tag(stash, tag_cache, normalized_tag_index, similarity_buckets)
     merged = list(dict.fromkeys([*clean_existing_ids, *imported_ids, marker_id]))
     target_date = desired_source_date if (desired_source_date and not current_date) else None
-    target_urls = None
+    target_urls = current_urls if current_urls != original_current_urls else None
     if desired_source_url and desired_source_url.casefold() not in current_url_keys:
         target_urls = [*current_urls, desired_source_url]
 
@@ -3315,13 +3384,14 @@ def review_candidate_action(
     """Accept or reject one Review candidate from the individual Stash image page."""
     image_id = str(args.get("image_id") or "").strip()
     candidate_url = str(args.get("candidate_url") or "").strip()
+    candidate_source_url, review_confidence = _review_candidate_parts(candidate_url)
     action = str(args.get("action") or "").strip().casefold()
 
     if not image_id:
         raise RuntimeError("Review decision is missing image_id")
     if action not in {"yes", "no"}:
         raise RuntimeError("Review decision action must be 'yes' or 'no'")
-    if not candidate_url or not _is_supported_booru_url(candidate_url):
+    if not candidate_url or not _is_supported_booru_url(candidate_source_url):
         raise RuntimeError("Review decision is missing a supported booru candidate URL")
 
     image = stash.find_image(image_id)
@@ -3371,7 +3441,8 @@ def review_candidate_action(
         return {
             "status": "rejected",
             "image_id": image_id,
-            "candidate_url": candidate_url,
+            "candidate_url": candidate_source_url,
+            "review_confidence": review_confidence,
             "marker": NO_MATCH_MARKER_TAG,
         }
 
@@ -3401,12 +3472,13 @@ def review_candidate_action(
         )
     log(
         "INFO",
-        f"Image {image_id}: Review candidate approved and imported from {candidate_url}.",
+        f"Image {image_id}: Review candidate approved and imported from {candidate_source_url}.",
     )
     return {
         "status": "imported",
         "image_id": image_id,
-        "candidate_url": candidate_url,
+        "candidate_url": candidate_source_url,
+        "review_confidence": review_confidence,
         "result": result,
         "marker": IMPORT_MARKER_TAG,
     }
