@@ -5,7 +5,7 @@ Metadata only by design:
 - Reads MD5 fingerprints already stored by Stash.
 - FAST mode tries exact-MD5 metadata lookups first (Danbooru, Gelbooru, Rule34, e621), then local pHash reuse and stops.
 - DEEP mode adds Danbooru/e621 IQDB and SauceNAO fallbacks for unresolved images.
-- Reads only metadata returned by the configured booru APIs.
+- Imports only explicit provider/source metadata; it never invents tags from titles or descriptions.
 - Never requests Danbooru file_url, large_file_url, previews, samples, thumbnails,
   or other remote image bytes. The IQDB fallback sends the existing Stash image
   to Danbooru in-memory only; it never saves a duplicate image locally.
@@ -60,7 +60,8 @@ from constants import (
     SAUCENAO_QUOTA_WINDOW_SECONDS,
     SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS,
     SAUCENAO_REVIEW_MINIMUM, SIMILAR_TAG_MARGIN, SIMILAR_TAG_THRESHOLD,
-    STUDIO_SIMILARITY_THRESHOLD, USER_AGENT, VERBOSE_FAST_DECISION_LOGGING, VERSION,
+    STUDIO_SIMILARITY_THRESHOLD, USER_AGENT, VERBOSE_FAST_DECISION_LOGGING,
+    VERSION, VISUAL_SEARCH_MAX_UPLOAD_BYTES,
 )
 from stash_client import Stash
 
@@ -813,14 +814,151 @@ def _saucenao_supported_candidate_url(data: Dict[str, Any]) -> str:
     return ""
 
 
-def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float, danbooru_login: str, danbooru_api_key: str, gelbooru_api_key: str, gelbooru_user_id: str, rule34_api_key: str, rule34_user_id: str, e621_username: str = '', e621_api_key: str = '', requests_per_30_seconds: float = 0.0, diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """Search SauceNAO with the existing Stash image, then resolve a supported booru post.
+def _saucenao_site_name(header: Dict[str, Any], data: Dict[str, Any]) -> str:
+    index_name = str(header.get("index_name") or "").strip()
+    match = re.match(r"Index #\d+:\s*(.+?)(?:\s+-\s+|$)", index_name)
+    if match:
+        return match.group(1).strip()
+    urls = data.get("ext_urls") or []
+    if isinstance(urls, str):
+        urls = [urls]
+    for url in urls:
+        host = (urllib.parse.urlparse(str(url)).hostname or "").lower()
+        if host:
+            return host.removeprefix("www.")
+    return "SauceNAO"
 
-    SauceNAO is used only as a similarity/index resolver. Tags are fetched from
-    Danbooru/Gelbooru/Rule34/e621 metadata APIs; remote source image files are never downloaded.
+
+def _saucenao_external_url(data: Dict[str, Any]) -> str:
+    urls = data.get("ext_urls") or []
+    if isinstance(urls, str):
+        urls = [urls]
+    for url in urls:
+        value = str(url or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    direct = str(data.get("url") or "").strip()
+    return direct if direct.startswith(("http://", "https://")) else ""
+
+
+def _saucenao_name_list(value: Any) -> List[str]:
+    values = value if isinstance(value, list) else [value]
+    result: List[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for part in re.split(r"\s*,\s*", str(raw or "")):
+            name = part.strip()
+            key = name.casefold()
+            if name and key not in seen and key not in {"unknown", "n/a"}:
+                seen.add(key)
+                result.append(name)
+    return result
+
+
+def _saucenao_external_post(
+    header: Dict[str, Any],
+    data: Dict[str, Any],
+    similarity: float,
+) -> Dict[str, Any]:
+    site = _saucenao_site_name(header, data)
+    source_url = _saucenao_external_url(data)
+    title = str(
+        data.get("title")
+        or data.get("eng_name")
+        or data.get("source")
+        or ""
+    ).strip()
+    artists: List[str] = []
+    seen_artists: set[str] = set()
+    for key in (
+        "creator", "author_name", "member_name", "artist",
+        "author", "twitter_user_handle",
+    ):
+        for name in _saucenao_name_list(data.get(key)):
+            folded = name.casefold()
+            if folded not in seen_artists:
+                seen_artists.add(folded)
+                artists.append(name)
+    source_id = next(
+        (
+            str(data.get(key))
+            for key in (
+                "pixiv_id", "tweet_id", "fa_id", "as_project", "konachan_id",
+                "yandere_id", "danbooru_id", "e621_id", "md_id", "da_id",
+                "pawoo_id", "fn_id", "member_id",
+            )
+            if data.get(key) not in (None, "")
+        ),
+        "",
+    )
+    return {
+        "id": source_id or source_url or f"saucenao-{header.get('index_id', '')}",
+        "_saucenao_score": similarity,
+        "_saucenao_external": True,
+        "_source_site": site,
+        "_source_url": source_url,
+        "_source_title": title,
+        "_source_artists": artists,
+        "_source_characters": _saucenao_name_list(data.get("characters")),
+        "_source_date": (
+            data.get("created_at")
+            or data.get("date")
+            or data.get("posted_at")
+            or ""
+        ),
+        "_saucenao_index_id": header.get("index_id"),
+        "_saucenao_index_name": header.get("index_name"),
+    }
+
+
+def moebooru_post_by_id(
+    base_url: str,
+    post_id: str,
+    source_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch authoritative tags/metadata from a Moebooru-compatible post API."""
+    params = urllib.parse.urlencode({"tags": f"id:{post_id}", "limit": "1"})
+    req = urllib.request.Request(
+        f"{base_url}/post.json?{params}",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+    )
+    try:
+        with HTTP.urlopen(req, timeout=30) as resp:
+            payload = _safe_json_response(resp.read(), source_name)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise RuntimeError(
+            f"{source_name} HTTP {exc.code} resolving SauceNAO result"
+        ) from exc
+    if not isinstance(payload, list):
+        raise RuntimeError(f"{source_name} returned an unexpected post response")
+    for post in payload:
+        if isinstance(post, dict) and str(post.get("id") or "") == str(post_id):
+            return dict(post)
+    return None
+
+
+def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float, danbooru_login: str, danbooru_api_key: str, gelbooru_api_key: str, gelbooru_user_id: str, rule34_api_key: str, rule34_user_id: str, e621_username: str = '', e621_api_key: str = '', requests_per_30_seconds: float = 0.0, diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Search SauceNAO and resolve the strongest qualifying source.
+
+    Known booru-style sources are resolved to their current metadata APIs so real
+    source tags can be imported. Other high-confidence SauceNAO sources return only
+    explicit SauceNAO metadata such as source URL, site, title, creator, and date.
+    Remote source image files are never downloaded.
     """
     if not api_key or _saucenao_is_disabled():
         return None
+
+    if len(image_bytes) > VISUAL_SEARCH_MAX_UPLOAD_BYTES:
+        if diagnostics is not None:
+            diagnostics["upload_bytes"] = len(image_bytes)
+            diagnostics["upload_limit_bytes"] = VISUAL_SEARCH_MAX_UPLOAD_BYTES
+        raise RuntimeError(
+            "SauceNAO upload skipped locally because the Stash image payload "
+            f"is still too large ({len(image_bytes)} bytes; "
+            f"limit {VISUAL_SEARCH_MAX_UPLOAD_BYTES})"
+        )
 
     _saucenao_wait_for_slot(requests_per_30_seconds)
     fields = {"api_key": api_key, "output_type":"2", "numres":"8", "db":"999"}
@@ -831,7 +969,17 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
     chunks.append((f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"stash-image\"\r\nContent-Type: application/octet-stream\r\n\r\n").encode()+image_bytes+b"\r\n")
     chunks.append(f"--{boundary}--\r\n".encode())
     body=b"".join(chunks)
-    req=urllib.request.Request(SAUCENAO_BASE,data=body,method="POST",headers={"User-Agent":USER_AGENT,"Accept":"application/json","Content-Type":f"multipart/form-data; boundary={boundary}"})
+    req=urllib.request.Request(
+        SAUCENAO_BASE,
+        data=body,
+        method="POST",
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        },
+    )
     try:
         with HTTP.urlopen(
             req,
@@ -843,6 +991,11 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
             payload=json.loads(raw)
     except urllib.error.HTTPError as exc:
         detail=exc.read().decode("utf-8",errors="replace")
+        if exc.code == 413:
+            raise RuntimeError(
+                "SauceNAO rejected the visual-search upload as too large (HTTP 413); "
+                "the image will remain pending for a later retry"
+            ) from exc
         if exc.code in {500, 520, 521, 522, 523, 524}:
             _saucenao_note_outage(exc.code)
             raise RuntimeError(
@@ -903,6 +1056,8 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
         diagnostics["minimum_similarity"] = minimum_similarity
     ranked.sort(key=lambda x:x[0],reverse=True)
     for sim,data in ranked:
+        if not isinstance(data, dict):
+            continue
         did=data.get("danbooru_id")
         if did:
             post=danbooru_post_by_id(str(did),danbooru_login,danbooru_api_key)
@@ -913,27 +1068,74 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
             post=e621_post_by_id(str(eid),e621_username,e621_api_key)
             if post:
                 post["_saucenao_score"]=sim; return "e621",post
+
+        kid=data.get("konachan_id")
+        if kid:
+            post=moebooru_post_by_id("https://konachan.com",str(kid),"Konachan")
+            if post:
+                post["_saucenao_score"]=sim
+                post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                return "konachan",post
+
+        yid=data.get("yandere_id")
+        if yid:
+            post=moebooru_post_by_id("https://yande.re",str(yid),"Yande.re")
+            if post:
+                post["_saucenao_score"]=sim
+                post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                return "yandere",post
+
         urls=data.get("ext_urls") or []
-        if isinstance(urls,str): urls=[urls]
+        if isinstance(urls,str):
+            urls=[urls]
         for u in urls:
             u=str(u)
-            import re
-            m=re.search(r'danbooru\\.donmai\\.us/posts/(\\d+)',u)
+            m=re.search(r'danbooru\.donmai\.us/posts/(\d+)',u)
             if m:
                 post=danbooru_post_by_id(m.group(1),danbooru_login,danbooru_api_key)
-                if post: post["_saucenao_score"]=sim; return "danbooru",post
-            m=re.search(r'gelbooru\\.com/.*[?&]id=(\\d+)',u)
+                if post:
+                    post["_saucenao_score"]=sim; return "danbooru",post
+            m=re.search(r'gelbooru\.com/.*[?&]id=(\d+)',u)
             if m:
                 post=gelbooru_style_post_by_id(GELBOORU_BASE,m.group(1),"Gelbooru",gelbooru_api_key,gelbooru_user_id)
-                if post: post["_saucenao_score"]=sim; return "gelbooru",post
-            m=re.search(r'rule34\\.xxx/.*[?&]id=(\\d+)',u)
+                if post:
+                    post["_saucenao_score"]=sim; return "gelbooru",post
+            m=re.search(r'rule34\.xxx/.*[?&]id=(\d+)',u)
             if m and rule34_api_key and rule34_user_id:
                 post=gelbooru_style_post_by_id(RULE34_BASE,m.group(1),"Rule34",rule34_api_key,rule34_user_id,True)
-                if post: post["_saucenao_score"]=sim; return "rule34",post
-            m=re.search(r'e621\\.net/posts/(\\d+)',u)
+                if post:
+                    post["_saucenao_score"]=sim; return "rule34",post
+            m=re.search(r'e621\.net/posts/(\d+)',u)
             if m:
                 post=e621_post_by_id(m.group(1),e621_username,e621_api_key)
-                if post: post["_saucenao_score"]=sim; return "e621",post
+                if post:
+                    post["_saucenao_score"]=sim; return "e621",post
+            m=re.search(r'konachan\.com/post/show/(\d+)',u)
+            if m:
+                post=moebooru_post_by_id("https://konachan.com",m.group(1),"Konachan")
+                if post:
+                    post["_saucenao_score"]=sim
+                    post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                    post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                    return "konachan",post
+            m=re.search(r'yande\.re/post/show/(\d+)',u)
+            if m:
+                post=moebooru_post_by_id("https://yande.re",m.group(1),"Yande.re")
+                if post:
+                    post["_saucenao_score"]=sim
+                    post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                    post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                    return "yandere",post
+
+        header={}
+        for item in results:
+            if isinstance(item,dict) and item.get("data") is data:
+                header=item.get("header") or {}
+                break
+        return "saucenao_external", _saucenao_external_post(header,data,sim)
+
     return None
 
 
@@ -1205,7 +1407,10 @@ def artist_names(
     """
     values: List[str] = []
 
-    if source == "e621":
+    if source in {"konachan", "yandere", "saucenao_external"}:
+        values.extend(str(v or "").strip() for v in (post.get("_source_artists") or []))
+
+    elif source == "e621":
         groups = post.get("tags") or {}
         raw_values = groups.get("artist") if isinstance(groups, dict) else None
         if isinstance(raw_values, list):
@@ -1591,7 +1796,9 @@ def performer_names(
     rule34_user_id: str = "",
 ) -> List[str]:
     values: List[str] = []
-    if source == "e621":
+    if source in {"konachan", "yandere", "saucenao_external"}:
+        values.extend(str(v or "").strip() for v in (post.get("_source_characters") or []))
+    elif source == "e621":
         groups = post.get("tags") or {}
         raw_values = groups.get("character") if isinstance(groups, dict) else None
         if isinstance(raw_values, list):
@@ -1823,7 +2030,7 @@ def _is_tag_fk_failure(exc: BaseException) -> bool:
 
 def tag_names(post: Dict[str, Any], source: str, include_meta: bool, prefixes: bool = False) -> List[str]:
     """Extract tag names from supported source post metadata."""
-    if source in {"gelbooru", "rule34"}:
+    if source in {"gelbooru", "rule34", "konachan", "yandere"}:
         raw = str(post.get("tags") or "")
         result: List[str] = []
         seen = set()
@@ -2507,6 +2714,12 @@ def source_post_url(source: str, post: Dict[str, Any]) -> Optional[str]:
         return f"https://gelbooru.com/index.php?page=post&s=view&id={post_id}"
     if source == "rule34":
         return f"https://rule34.xxx/index.php?page=post&s=view&id={post_id}"
+    if source == "konachan":
+        return f"https://konachan.com/post/show/{post_id}"
+    if source == "yandere":
+        return f"https://yande.re/post/show/{post_id}"
+    if source == "saucenao_external":
+        return str(post.get("_source_url") or "").strip() or None
     return None
 
 
@@ -2541,6 +2754,10 @@ def normalize_source_date(value: Any) -> Optional[str]:
 
 
 def source_post_date(source: str, post: Dict[str, Any]) -> Optional[str]:
+    if source == "saucenao_external":
+        parsed = normalize_source_date(post.get("_source_date"))
+        if parsed:
+            return parsed
     # Only use fields that clearly represent source creation/posting dates.
     # Do not use generic change/update timestamps, which may reflect later edits.
     for value in (
@@ -2602,6 +2819,18 @@ def _visual_confidence(score: float, auto_threshold: float, review_threshold: fl
     if score >= review_threshold:
         return "REVIEW"
     return "LOW"
+
+
+def _saucenao_strong_unsupported_is_inconclusive(
+    best_similarity: float,
+    best_supported_similarity: float,
+    review_threshold: float,
+) -> bool:
+    """A strong SauceNAO hit outside supported boorus is not a definitive miss."""
+    best = _saucenao_policy_score(best_similarity)
+    supported = _saucenao_policy_score(best_supported_similarity)
+    review = _saucenao_policy_score(review_threshold)
+    return best >= review and supported < review
 
 
 def _saucenao_thresholds(settings: Dict[str, Any]) -> Tuple[float, float, bool]:
@@ -3200,7 +3429,6 @@ def process_image(
 
         saucenao_outcome = visual_outcomes.get("saucenao")
         if saucenao_outcome is not None:
-            outcomes.append(saucenao_outcome)
             best_similarity = float(
                 saucenao_diag.get("best_similarity", 0.0) or 0.0
             )
@@ -3211,7 +3439,44 @@ def process_image(
             best_supported_url = str(
                 saucenao_diag.get("best_supported_url") or ""
             ).strip()
-            if saucenao_outcome.matched:
+
+            strong_unsupported = (
+                post is None
+                and saucenao_outcome.status == LookupStatus.MISS
+                and _saucenao_strong_unsupported_is_inconclusive(
+                    best_similarity,
+                    best_supported_similarity,
+                    saucenao_review_min,
+                )
+            )
+            if strong_unsupported:
+                # SauceNAO found a visually strong result, but it belongs to a
+                # source this importer cannot resolve into trusted booru metadata.
+                # That is inconclusive, not an authoritative miss, so keep the
+                # image pending instead of writing Multi-Booru No Match.
+                outcomes.append(
+                    LookupOutcome(
+                        "SauceNAO",
+                        "visual",
+                        LookupStatus.UNAVAILABLE,
+                        None,
+                        (
+                            "strong visual match from unsupported source "
+                            f"({best_similarity:.1f}%)"
+                        ),
+                    )
+                )
+                _metric(metrics, "saucenao_unsupported_results")
+                decision_details.append(
+                    f"SauceNAO: strong unsupported visual result "
+                    f"{best_similarity:.1f}%; keeping image pending"
+                )
+            else:
+                outcomes.append(saucenao_outcome)
+
+            if strong_unsupported:
+                pass
+            elif saucenao_outcome.matched:
                 sauce_source, sauce_post = saucenao_outcome.value
                 score = float(
                     sauce_post.get("_saucenao_score", best_similarity) or 0.0
@@ -3388,10 +3653,12 @@ def process_image(
         usable_artists if artist_mapping in {"studios", "both"} else []
     )
 
-    # Gelbooru/Rule34 start with one flat source tag list. If a value is known to
-    # be an ignored artist marker, remove it before any mapping policy can turn it
-    # back into an ordinary Stash tag.
-    if source in {"gelbooru", "rule34"} and artists:
+    # Flat-tag boorus expose one source tag list. If a value is known to be an
+    # artist marker, keep the configured artist mapping from also leaving it as
+    # an ordinary tag. Separator/case normalization covers SauceNAO names such as
+    # "artist name" versus a site tag "artist_name".
+    flat_tag_source = source in {"gelbooru", "rule34", "konachan", "yandere"}
+    if flat_tag_source and artists:
         ignored_source_artist_keys = {
             str(artist).strip().casefold() for artist in artists
             if str(artist).strip().casefold() in ignored_artist_keys
@@ -3410,12 +3677,12 @@ def process_image(
                 names.append(artist)
                 existing_name_keys.add(artist.casefold())
     elif artist_mapping == "studios":
-        if source in {"gelbooru", "rule34"} and artists:
+        if flat_tag_source and artists:
             # Artist-category entries are removed from the flat source tag list.
             # The first usable artist becomes the Studio; later usable artists
             # are re-added below as ordinary image tags.
-            artist_keys = {a.casefold() for a in artists}
-            names = [n for n in names if n.casefold() not in artist_keys]
+            artist_keys = {normalized_tag_key(a) for a in artists}
+            names = [n for n in names if normalized_tag_key(n) not in artist_keys]
 
         # A Stash image has one Studio slot. Preserve every additional usable
         # artist as an image tag instead of silently dropping that metadata.
@@ -3431,9 +3698,9 @@ def process_image(
             if character.casefold() not in existing_name_keys:
                 names.append(character)
                 existing_name_keys.add(character.casefold())
-    elif source in {"gelbooru", "rule34"} and characters:
-        character_keys = {p.casefold() for p in characters}
-        names = [n for n in names if n.casefold() not in character_keys]
+    elif flat_tag_source and characters:
+        character_keys = {normalized_tag_key(p) for p in characters}
+        names = [n for n in names if normalized_tag_key(n) not in character_keys]
 
     performers = characters if character_mapping in {"performers", "both"} else []
     studio_targets = (
@@ -3442,6 +3709,8 @@ def process_image(
     desired_studio_name = studio_targets[0] if studio_targets else None
 
     current_studio = image.get("studio")
+    current_title = str(image.get("title") or "").strip()
+    current_photographer = str(image.get("photographer") or "").strip()
     current_date = str(image.get("date") or "").strip()
     original_current_urls = [
         str(u).strip() for u in (image.get("urls") or []) if str(u).strip()
@@ -3473,6 +3742,16 @@ def process_image(
     current_url_keys = {u.casefold() for u in current_urls}
     desired_source_url = source_post_url(source, post)
     desired_source_date = source_post_date(source, post)
+    desired_source_title = (
+        str(post.get("_source_title") or "").strip()
+        if source == "saucenao_external"
+        else ""
+    )
+    desired_source_photographer = (
+        ", ".join(str(v).strip() for v in (post.get("_source_artists") or []) if str(v).strip())
+        if source == "saucenao_external"
+        else ""
+    )
     existing_performer_ids = {str(p["id"]) for p in image.get("performers") or []}
     existing_ids = {str(tag["id"]) for tag in image.get("tags") or []}
 
@@ -3481,7 +3760,9 @@ def process_image(
         "gelbooru": "Gelbooru",
         "rule34": "Rule34",
         "e621": "e621",
-    }.get(source, source)
+        "konachan": "Konachan",
+        "yandere": "Yande.re",
+    }.get(source, str(post.get("_source_site") or source))
 
     if dry_run:
         new_names = [
@@ -3554,6 +3835,10 @@ def process_image(
             source_meta_note += f"; date {desired_source_date} would be set"
         if desired_source_url and desired_source_url.casefold() not in current_url_keys:
             source_meta_note += "; source URL would be appended"
+        if desired_source_title and not current_title:
+            source_meta_note += f"; title '{desired_source_title}' would be set"
+        if desired_source_photographer and not current_photographer:
+            source_meta_note += f"; creator '{desired_source_photographer}' would be set"
 
         log(
             "INFO",
@@ -3616,6 +3901,12 @@ def process_image(
     marker_id = ensure_import_marker_tag(stash, tag_cache, normalized_tag_index, similarity_buckets)
     merged = list(dict.fromkeys([*clean_existing_ids, *imported_ids, marker_id]))
     target_date = desired_source_date if (desired_source_date and not current_date) else None
+    target_title = desired_source_title if (desired_source_title and not current_title) else None
+    target_photographer = (
+        desired_source_photographer
+        if (desired_source_photographer and not current_photographer)
+        else None
+    )
     target_urls = current_urls if current_urls != original_current_urls else None
     if desired_source_url and desired_source_url.casefold() not in current_url_keys:
         target_urls = [*current_urls, desired_source_url]
@@ -3625,9 +3916,25 @@ def process_image(
     performers_changed = performer_ids_to_attach != existing_performer_ids
     date_changed = target_date is not None
     urls_changed = target_urls is not None
+    title_changed = target_title is not None
+    photographer_changed = target_photographer is not None
     result_prefix = "unchanged"
 
-    if tags_changed or studio_changed or performers_changed or date_changed or urls_changed:
+    if (
+        tags_changed
+        or studio_changed
+        or performers_changed
+        or date_changed
+        or urls_changed
+        or title_changed
+        or photographer_changed
+    ):
+        optional_image_fields: Dict[str, str] = {}
+        if target_title is not None:
+            optional_image_fields["title"] = target_title
+        if target_photographer is not None:
+            optional_image_fields["photographer"] = target_photographer
+
         recovered_relations: set[str] = set()
         while True:
             try:
@@ -3637,6 +3944,7 @@ def process_image(
                     performer_ids=sorted(performer_ids_to_attach),
                     date=target_date,
                     urls=target_urls,
+                    **optional_image_fields,
                 )
                 break
             except RuntimeError as exc:
@@ -3736,7 +4044,9 @@ def process_image(
             + (f"; assigned studio '{assigned_studio.get('name')}'" if assigned_studio else "")
             + (f"; attached {len(performers)} performer(s)" if performers else "")
             + (f"; set date {target_date}" if target_date else "")
-            + ("; appended source URL" if target_urls is not None else ""),
+            + ("; appended source URL" if target_urls is not None else "")
+            + (f"; set title '{target_title}'" if target_title else "")
+            + (f"; set creator '{target_photographer}'" if target_photographer else ""),
         )
     else:
         log("INFO", f"Image {iid} already has all {source_label} #{post.get('id')} metadata")

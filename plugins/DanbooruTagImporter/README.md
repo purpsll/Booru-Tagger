@@ -1,10 +1,10 @@
-# Booru Importer v3.26.14
+# Booru Importer v3.26.20
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.14 lowers the SauceNAO automatic-import threshold to a displayed 94.0% while keeping the Review floor at 85.0%. Results displayed as 94.0% or higher auto-import; 85.0–93.9% candidates require an explicit decision. Existing Deep Match throughput, provider-retry safeguards, and artist mapping behavior are unchanged.
+v3.26.20 keeps the displayed SauceNAO automatic-import threshold at 94.0% and fixes two Deep Match edge cases: oversized Stash thumbnail fallbacks are resized before SauceNAO upload, and a high-confidence SauceNAO hit from an external source is no longer misclassified as No Match. High-confidence external matches now import verified source metadata; Yande.re and Konachan are additionally resolved through their post APIs so their authoritative tags can be imported.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -114,7 +114,7 @@ State transitions remove the old plugin status marker without removing ordinary 
 - SauceNAO REVIEW auto-accept: off
 - SauceNAO polling: adaptive to the account-reported `short_limit` (roughly a 30-second quota window); optional user ceiling via **SauceNAO searches per 30 seconds**
 - SauceNAO long-term quota: account-reported `long_limit` / `long_remaining` is tracked so exhausted accounts do not produce false No Match results
-- Deep visual-search payload: Stash-generated 640px thumbnail rather than the original full-resolution image
+- Deep visual-search payload: Stash-generated 640px thumbnail rather than the original full-resolution image; if Stash returns an oversized original fallback, the plugin attempts an in-memory FFmpeg resize and keeps SauceNAO requests below a conservative 1,000,000-byte file payload ceiling
 - Deep visual-search timeout: 30 seconds per request with no inline upload retries; transient failures remain retryable
 - After Danbooru IQDB misses, e621 IQDB and SauceNAO may run concurrently with at most 2 visual-search workers
 - e621 IQDB transient failures are image-local: every new image retries e621 IQDB; no run-wide e621 IQDB disable is retained
@@ -161,7 +161,7 @@ Rule34 also has a provider-specific API quirk: an HTTP 200 response with an empt
 
 ## Metadata behavior
 
-The plugin preserves existing ordinary Stash metadata. It adds matched source tags and merges source performers, assigns a source artist Studio only when the target has no Studio, sets a source date only when the target has no date, and appends a canonical source URL if it is not already present.
+The plugin preserves existing ordinary Stash metadata. It adds matched source tags when the source exposes authoritative tags and merges source performers, assigns a source artist Studio only when the target has no Studio, sets a source date only when the target has no date, and appends a canonical source URL if it is not already present. High-confidence external SauceNAO sources can also fill a blank Stash title and photographer/creator field from explicit SauceNAO metadata. Yande.re and Konachan matches are resolved to their post APIs for real source tags; sites without a reliable tag endpoint are metadata-only rather than having tags guessed from titles or descriptions.
 
 Normalized and fuzzy entity matching are conservative and require a clear winner. Existing user metadata is not removed by ordinary imports.
 

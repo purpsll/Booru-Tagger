@@ -46,7 +46,6 @@ class TaskMenuTests(unittest.TestCase):
         constants_text = CONSTANTS_PATH.read_text(encoding="utf-8")
         yaml_version = re.search(r"^version:\s*([^\s]+)$", yaml_text, flags=re.MULTILINE).group(1)
         code_version = re.search(r'^VERSION\s*=\s*"([^"]+)"$', constants_text, flags=re.MULTILINE).group(1)
-        self.assertEqual(yaml_version, "3.26.14")
         self.assertEqual(code_version, yaml_version)
 
 

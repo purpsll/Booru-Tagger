@@ -435,7 +435,7 @@ class PluginSafetyTests(unittest.TestCase):
         self.assertEqual(metrics.get("saucenao_queries"), 1)
         self.assertEqual(metrics.get("saucenao_review_candidates"), 1)
 
-    def test_unsupported_saucenao_result_does_not_become_review_candidate(self):
+    def test_strong_unsupported_saucenao_result_stays_pending(self):
         stash = ProcessFakeStash()
         settings = {"saucenao_api_key": "key"}
         metrics = {}
@@ -459,7 +459,7 @@ class PluginSafetyTests(unittest.TestCase):
                 stash, md5_image(), settings, {}, True, {}, {}, {}, {},
                 plugin.PHashIndex(), lookup_mode="deep", metrics=metrics
             )
-        self.assertEqual(result, "no_match")
+        self.assertEqual(result, "retry_later")
         self.assertEqual(metrics.get("saucenao_review_candidates", 0), 0)
 
     def test_legacy_tuning_settings_cannot_override_fixed_policy(self):
