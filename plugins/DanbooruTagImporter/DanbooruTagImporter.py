@@ -883,8 +883,11 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
     best_supported_url = ""
     for item in results:
         if not isinstance(item,dict): continue
-        try: sim=float((item.get("header") or {}).get("similarity") or 0)
-        except (TypeError,ValueError): sim=0
+        try:
+            raw_similarity = float((item.get("header") or {}).get("similarity") or 0)
+        except (TypeError, ValueError):
+            raw_similarity = 0.0
+        sim = _saucenao_policy_score(raw_similarity)
         data = item.get("data") or {}
         best_seen_similarity = max(best_seen_similarity, sim)
         if isinstance(data, dict) and _saucenao_data_has_supported_booru(data):
@@ -2276,7 +2279,18 @@ def _decision_enabled(settings: Dict[str, Any], dry_run: bool, lookup_mode: str)
     return dry_run or lookup_mode == "deep" or VERBOSE_FAST_DECISION_LOGGING
 
 
+def _saucenao_policy_score(score: float) -> float:
+    """Normalize SauceNAO similarity to the same one-decimal value shown to users."""
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        value = 0.0
+    value = max(0.0, min(100.0, value))
+    return float(f"{value:.1f}")
+
+
 def _visual_confidence(score: float, auto_threshold: float, review_threshold: float) -> str:
+    score = _saucenao_policy_score(score)
     if score >= auto_threshold:
         return "HIGH"
     if score >= review_threshold:
