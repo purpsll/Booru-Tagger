@@ -2149,11 +2149,7 @@ def resolve_existing_tag_ids(
     cache: Dict[str, Dict[str, str]],
     names: Iterable[str],
     *,
-    merge_similar: bool,
-    similarity_threshold: float,
-    similarity_margin: float,
     normalized_index: Dict[str, Dict[str, str]],
-    similarity_buckets: Dict[Tuple[str, int], List[Tuple[str, Dict[str, str]]]],
     image_id: str = "",
 ) -> List[str]:
     """Resolve current canonical tag IDs without creating replacement tags.
@@ -3698,11 +3694,7 @@ def process_image(
                 imported_ids = resolve_existing_tag_ids(
                     tag_cache,
                     names,
-                    merge_similar=merge_similar,
-                    similarity_threshold=similar_threshold,
-                    similarity_margin=tag_similarity_margin,
                     normalized_index=normalized_tag_index,
-                    similarity_buckets=similarity_buckets,
                     image_id=iid,
                 )
                 marker_id = ensure_import_marker_tag(
