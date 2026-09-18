@@ -5,7 +5,7 @@ Metadata only by design:
 - Reads MD5 fingerprints already stored by Stash.
 - FAST mode tries exact-MD5 metadata lookups first (Danbooru, Gelbooru, Rule34, e621), then local pHash reuse and stops.
 - DEEP mode adds Danbooru/e621 IQDB and SauceNAO fallbacks for unresolved images.
-- Reads only metadata returned by the configured booru APIs.
+- Imports only explicit provider/source metadata; it never invents tags from titles or descriptions.
 - Never requests Danbooru file_url, large_file_url, previews, samples, thumbnails,
   or other remote image bytes. The IQDB fallback sends the existing Stash image
   to Danbooru in-memory only; it never saves a duplicate image locally.
@@ -940,10 +940,12 @@ def moebooru_post_by_id(
 
 
 def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float, danbooru_login: str, danbooru_api_key: str, gelbooru_api_key: str, gelbooru_user_id: str, rule34_api_key: str, rule34_user_id: str, e621_username: str = '', e621_api_key: str = '', requests_per_30_seconds: float = 0.0, diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """Search SauceNAO with the existing Stash image, then resolve a supported booru post.
+    """Search SauceNAO and resolve the strongest qualifying source.
 
-    SauceNAO is used only as a similarity/index resolver. Tags are fetched from
-    Danbooru/Gelbooru/Rule34/e621 metadata APIs; remote source image files are never downloaded.
+    Known booru-style sources are resolved to their current metadata APIs so real
+    source tags can be imported. Other high-confidence SauceNAO sources return only
+    explicit SauceNAO metadata such as source URL, site, title, creator, and date.
+    Remote source image files are never downloaded.
     """
     if not api_key or _saucenao_is_disabled():
         return None
