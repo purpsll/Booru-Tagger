@@ -3929,6 +3929,12 @@ def process_image(
         or title_changed
         or photographer_changed
     ):
+        optional_image_fields: Dict[str, str] = {}
+        if target_title is not None:
+            optional_image_fields["title"] = target_title
+        if target_photographer is not None:
+            optional_image_fields["photographer"] = target_photographer
+
         recovered_relations: set[str] = set()
         while True:
             try:
@@ -3938,8 +3944,7 @@ def process_image(
                     performer_ids=sorted(performer_ids_to_attach),
                     date=target_date,
                     urls=target_urls,
-                    title=target_title,
-                    photographer=target_photographer,
+                    **optional_image_fields,
                 )
                 break
             except RuntimeError as exc:
