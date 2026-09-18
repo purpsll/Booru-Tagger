@@ -202,6 +202,37 @@ class ReviewDecisionTests(unittest.TestCase):
                 },
             )
 
+    def test_review_transition_keeps_active_candidate_url_last(self):
+        image = review_image()
+        image["urls"] = [
+            CANDIDATE_URL,
+            "https://e621.net/posts/999",
+            "https://example.com/user-url",
+        ]
+        stash = ReviewFakeStash(image)
+        tag_cache = stash.all_tags()
+        normalized = plugin.build_normalized_tag_index(tag_cache)
+        buckets = plugin.build_similarity_buckets(normalized)
+
+        plugin.transition_image_status(
+            stash,
+            image,
+            plugin.REVIEW_MARKER_TAG,
+            tag_cache,
+            normalized,
+            buckets,
+            extra_url=CANDIDATE_URL,
+        )
+
+        self.assertEqual(
+            stash.updated[-1]["urls"],
+            [
+                "https://e621.net/posts/999",
+                "https://example.com/user-url",
+                CANDIDATE_URL,
+            ],
+        )
+
     def test_review_ui_is_loaded_and_exposes_yes_no_controls(self):
         manifest = (PLUGIN_DIR / "DanbooruTagImporter.yml").read_text(encoding="utf-8")
         ui = (PLUGIN_DIR / "BooruImporterReview.js").read_text(encoding="utf-8")
