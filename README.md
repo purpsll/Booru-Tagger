@@ -1,12 +1,13 @@
 # Booru Importer
 
-**Booru Importer is a Stash plugin that finds matching posts on Danbooru, Gelbooru, Rule34, and e621, then imports useful metadata into images already in your Stash library.**
+**Booru Importer is a Stash plugin that finds matching posts on Danbooru, Gelbooru, Rule34, e621, and other high-confidence SauceNAO sources, then imports useful metadata into images already in your Stash library.**
 
 It can add:
 
-- source tags
+- source tags when the matched site exposes authoritative tags
 - the canonical source URL
 - the source post date when the Stash image has no date
+- source title and creator for high-confidence external SauceNAO matches when those Stash fields are blank
 - characters as Stash Performers
 - the first usable artist as the Stash Studio
 - additional artists as normal Stash tags
@@ -68,6 +69,8 @@ SauceNAO results use the same one-decimal confidence value shown in the plugin l
 - **94.0% or higher → automatically imported**
 - **85.0–93.9% → Review**
 - **below 85.0% → not accepted as a SauceNAO match**
+
+A high-confidence SauceNAO result is no longer treated as **No Match** merely because it comes from a site outside the original four boorus. The plugin identifies the matched site from SauceNAO's index/source data and imports only metadata that can be verified. Yande.re and Konachan matches are resolved through their post APIs so their real source tags can also be imported. Other sites may be metadata-only when no reliable tag API is available.
 
 When an image is marked **`Multi-Booru Review`**, open that image's normal Stash image page.
 
@@ -170,7 +173,7 @@ Booru Importer is designed to add metadata conservatively:
 
 ## Temporary provider errors
 
-HTTP 429, temporary 5xx errors, Cloudflare challenges, timeouts, and similar provider failures are treated as temporary.
+HTTP 429, temporary 5xx errors, Cloudflare challenges, timeouts, oversized SauceNAO uploads, and similar provider failures are treated as temporary.
 
 An image is kept eligible for retry instead of being incorrectly marked No Match when an active provider did not complete authoritatively.
 
@@ -182,7 +185,7 @@ SauceNAO and e621 also have provider-specific pacing and backoff so one failed r
 
 **Fast Scan** primarily sends hashes to provider APIs.
 
-**Deep Match** may send a Stash-generated **640px thumbnail** to configured reverse-image-search services such as Danbooru IQDB, e621 IQDB, and SauceNAO. It does not upload the original full-resolution image for this step.
+**Deep Match** may send a Stash-generated **640px thumbnail** to configured reverse-image-search services such as Danbooru IQDB, e621 IQDB, and SauceNAO. If Stash falls back to an original image because a thumbnail format is unsupported, Booru Importer attempts an in-memory FFmpeg resize before upload and refuses an oversized SauceNAO request rather than sending a body likely to receive HTTP 413.
 
 Review the privacy policies and terms of any external services you enable.
 
