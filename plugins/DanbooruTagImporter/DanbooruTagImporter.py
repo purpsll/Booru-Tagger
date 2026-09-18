@@ -1753,7 +1753,10 @@ def _resolve_performer_ids_for_image(
                 performer_name,
                 performer_cache,
                 merge_normalized=merge_normalized,
-                merge_similar=merge_similar,
+                # Recovery must never guess a replacement by fuzzy similarity.
+                # Exact aliases and unambiguous normalized matches are sufficient
+                # to follow a real Stash merge to its surviving canonical performer.
+                merge_similar=False,
                 similarity_threshold=similarity_threshold,
                 similarity_margin=similarity_margin,
             )
@@ -1974,10 +1977,12 @@ def normalized_tag_key(name: str) -> str:
 
 
 def build_normalized_tag_index(cache: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
-    """Index only unambiguous normalized tag names.
+    """Index only unambiguous normalized tag names and aliases.
 
     Two distinct existing tags can collapse to the same separator/case-normalized key. In
     that case neither is a safe automatic reuse target, so the key is deliberately omitted.
+    Including aliases ensures separator variants of an existing Stash alias still resolve
+    to the alias owner's canonical tag ID.
     """
     out: Dict[str, Dict[str, str]] = {}
     ambiguous: set[str] = set()
@@ -1987,15 +1992,18 @@ def build_normalized_tag_index(cache: Dict[str, Dict[str, str]]) -> Dict[str, Di
         if not tag_id or tag_id in seen_ids:
             continue
         seen_ids.add(tag_id)
-        key = normalized_tag_key(tag.get("name") or "")
-        if not key or key in ambiguous:
-            continue
-        existing = out.get(key)
-        if existing is not None and str(existing.get("id") or "") != tag_id:
-            out.pop(key, None)
-            ambiguous.add(key)
-            continue
-        out[key] = tag
+        values = [str(tag.get("name") or "")]
+        values.extend(str(alias or "") for alias in (tag.get("aliases") or []))
+        for value in values:
+            key = normalized_tag_key(value)
+            if not key or key in ambiguous:
+                continue
+            existing = out.get(key)
+            if existing is not None and str(existing.get("id") or "") != tag_id:
+                out.pop(key, None)
+                ambiguous.add(key)
+                continue
+            out[key] = tag
     return out
 
 
@@ -2161,15 +2169,11 @@ def resolve_existing_tag_ids(
         if not name:
             continue
         existing = cache.get(name.casefold())
-        if existing is None and merge_similar:
-            existing = find_similar_existing_tag(
-                name,
-                cache,
-                normalized_index,
-                similarity_threshold,
-                similarity_buckets,
-                similarity_margin,
-            )
+        if existing is None:
+            # Recovery intentionally does not fuzzy-match. A deleted tag must not
+            # silently become a merely similar tag. Only current names, aliases,
+            # or unambiguous separator/case-normalized equivalents are trusted.
+            existing = normalized_index.get(normalized_tag_key(name))
         if existing:
             tag_id = str(existing.get("id") or "")
             if tag_id and tag_id not in seen:
