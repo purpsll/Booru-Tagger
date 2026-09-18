@@ -472,7 +472,8 @@ class PluginSafetyTests(unittest.TestCase):
     def test_saucenao_confidence_bands(self):
         self.assertEqual(plugin._visual_confidence(96.0, 95.0, 85.0), "HIGH")
         self.assertEqual(plugin._visual_confidence(94.0, 95.0, 85.0), "REVIEW")
-        self.assertEqual(plugin._visual_confidence(85.0, 95.0, 85.0), "REVIEW")\n        self.assertEqual(plugin._visual_confidence(84.9, 95.0, 85.0), "LOW")
+        self.assertEqual(plugin._visual_confidence(85.0, 95.0, 85.0), "REVIEW")
+        self.assertEqual(plugin._visual_confidence(84.9, 95.0, 85.0), "LOW")
 
     def test_ambiguous_normalized_tag_key_is_not_auto_reused(self):
         cache = {
