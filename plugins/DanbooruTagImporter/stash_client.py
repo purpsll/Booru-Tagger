@@ -119,9 +119,6 @@ class Stash:
             (384, 11),
             (256, 13),
         )
-        last_error = ""
-        smallest: Optional[bytes] = None
-
         for max_dimension, quality in attempts:
             cmd = [
                 ffmpeg_path,
@@ -151,19 +148,13 @@ class Stash:
                     timeout=30,
                     check=False,
                 )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                last_error = str(exc)
+            except (OSError, subprocess.TimeoutExpired):
                 continue
 
             output = bytes(proc.stdout or b"")
             if proc.returncode != 0 or not output:
-                last_error = (proc.stderr or b"").decode(
-                    "utf-8", errors="replace"
-                ).strip()[:300]
                 continue
 
-            if smallest is None or len(output) < len(smallest):
-                smallest = output
             if len(output) <= VISUAL_SEARCH_MAX_UPLOAD_BYTES:
                 return output
 
