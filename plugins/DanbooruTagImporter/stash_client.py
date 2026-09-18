@@ -249,13 +249,18 @@ class Stash:
         while True:
             q = """
             query Tags($filter: FindFilterType) {
-              findTags(filter: $filter) { count tags { id name } }
+              findTags(filter: $filter) { count tags { id name aliases } }
             }
             """
             data = self.gql(q, {"filter": {"page": page, "per_page": 500}})["findTags"]
             tags = data["tags"]
             for tag in tags:
-                out[tag["name"].casefold()] = tag
+                keys = [str(tag.get("name") or "")]
+                keys.extend(str(alias or "") for alias in (tag.get("aliases") or []))
+                for value in keys:
+                    key = value.casefold().strip()
+                    if key and key not in out:
+                        out[key] = tag
             if page * 500 >= int(data["count"]):
                 break
             page += 1
