@@ -2459,6 +2459,7 @@ def process_image(
     force_recheck: bool = False,
     lookup_mode: str = "deep",
     metrics: Optional[Dict[str, Any]] = None,
+    approved_source_url: str = "",
 ) -> str:
     iid = str(image["id"])
     lookup_mode = str(lookup_mode or "deep").strip().casefold()
@@ -2523,10 +2524,29 @@ def process_image(
     match_method = ""
     outcomes: List[LookupOutcome] = []
 
-    if skip_fast_stages:
+    approved_source_url = str(approved_source_url or "").strip()
+    if approved_source_url:
+        resolved = _resolve_supported_booru_url(
+            approved_source_url,
+            danbooru_login=danbooru_login,
+            danbooru_api_key=danbooru_api_key,
+            gelbooru_api_key=gelbooru_api_key,
+            gelbooru_user_id=gelbooru_user_id,
+            rule34_api_key=rule34_api_key,
+            rule34_user_id=rule34_user_id,
+            e621_username=e621_username,
+            e621_api_key=e621_api_key,
+        )
+        if not resolved:
+            raise RuntimeError("The approved Review candidate could not be resolved from its source site")
+        source, post = resolved
+        match_method = "manual_review"
+        decision_details.append(f"Review candidate: manually approved {approved_source_url}")
+
+    if post is None and skip_fast_stages:
         decision_details.append("Fast MD5/pHash stages: skipped (already Unresolved)")
         _metric(metrics, "fast_stages_reused")
-    else:
+    elif post is None:
         # Authoritative exact hashes always win over perceptual reuse.
         exact_specs = []
         if md5 and ENABLE_DANBOORU:
@@ -3096,6 +3116,8 @@ def process_image(
                 f"trusted local pHash distance {int(post.get('_local_phash_distance', 0) or 0)} "
                 f"via Stash image {post.get('_local_phash_source_image_id')}"
             )
+        elif match_method == "manual_review":
+            detail = "manually approved Review candidate"
         else:
             detail = f"exact MD5 {md5}"
 
@@ -3231,6 +3253,7 @@ def process_image(
                 f"trusted local pHash distance {int(post.get('_local_phash_distance', 0) or 0)} "
                 f"via Stash image {post.get('_local_phash_source_image_id')}"
             ) if match_method == "local_phash"
+            else "manually approved Review candidate" if match_method == "manual_review"
             else "exact MD5"
         )
         log(
@@ -3262,6 +3285,116 @@ def process_image(
     if match_method == "local_phash":
         return f"{result_prefix}_local_phash"
     return f"{result_prefix}_{source}"
+
+
+def _is_supported_booru_url(url: str) -> bool:
+    text = str(url or "").strip()
+    return bool(
+        re.search(r"danbooru\\.donmai\\.us/posts/\\d+", text)
+        or re.search(r"gelbooru\\.com/.*[?&]id=\\d+", text)
+        or re.search(r"rule34\\.xxx/.*[?&]id=\\d+", text)
+        or re.search(r"e621\\.net/posts/\\d+", text)
+    )
+
+
+def review_candidate_action(
+    stash: Stash,
+    settings: Dict[str, Any],
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Accept or reject one Review candidate from the individual Stash image page."""
+    image_id = str(args.get("image_id") or "").strip()
+    candidate_url = str(args.get("candidate_url") or "").strip()
+    action = str(args.get("action") or "").strip().casefold()
+
+    if not image_id:
+        raise RuntimeError("Review decision is missing image_id")
+    if action not in {"yes", "no"}:
+        raise RuntimeError("Review decision action must be 'yes' or 'no'")
+    if not candidate_url or not _is_supported_booru_url(candidate_url):
+        raise RuntimeError("Review decision is missing a supported booru candidate URL")
+
+    image = stash.find_image(image_id)
+    if not image:
+        raise RuntimeError(f"Image {image_id} was not found")
+    if REVIEW_MARKER_TAG.casefold() not in _image_status_names(image):
+        raise RuntimeError(f"Image {image_id} is not currently marked '{REVIEW_MARKER_TAG}'")
+
+    current_urls = [
+        str(url).strip()
+        for url in (image.get("urls") or [])
+        if str(url).strip()
+    ]
+    if candidate_url.casefold() not in {url.casefold() for url in current_urls}:
+        raise RuntimeError("The proposed Review candidate URL is no longer attached to this image")
+
+    configure_network(settings, reset=True)
+    tag_cache = stash.all_tags()
+    normalized_index = build_normalized_tag_index(tag_cache)
+    similarity_buckets = build_similarity_buckets(normalized_index)
+
+    if action == "no":
+        marker_id = ensure_no_match_marker_tag(
+            stash, tag_cache, normalized_index, similarity_buckets
+        )
+        final_tag_ids = list(dict.fromkeys([*_non_status_tag_ids(image), marker_id]))
+        remaining_urls = [
+            url for url in current_urls
+            if url.casefold() != candidate_url.casefold()
+        ]
+        stash.update_image_tags(
+            image_id,
+            final_tag_ids,
+            urls=remaining_urls,
+        )
+        log(
+            "INFO",
+            f"Image {image_id}: Review candidate rejected; "
+            f"removed candidate URL and wrote '{NO_MATCH_MARKER_TAG}'.",
+        )
+        return {
+            "status": "rejected",
+            "image_id": image_id,
+            "candidate_url": candidate_url,
+            "marker": NO_MATCH_MARKER_TAG,
+        }
+
+    studio_cache = stash.all_studios()
+    performer_cache = stash.all_performers()
+    result = process_image(
+        stash,
+        image,
+        settings,
+        tag_cache,
+        dry_run=False,
+        normalized_tag_index=normalized_index,
+        similarity_buckets=similarity_buckets,
+        studio_cache=studio_cache,
+        performer_cache=performer_cache,
+        phash_index=PHashIndex(),
+        force_recheck=True,
+        lookup_mode="deep",
+        approved_source_url=candidate_url,
+    )
+    if not (
+        result.startswith("updated_")
+        or result.startswith("unchanged_")
+    ):
+        raise RuntimeError(
+            f"Approved Review candidate did not complete a normal metadata import: {result}"
+        )
+    log(
+        "INFO",
+        f"Image {image_id}: Review candidate approved and imported from {candidate_url}.",
+    )
+    return {
+        "status": "imported",
+        "image_id": image_id,
+        "candidate_url": candidate_url,
+        "result": result,
+        "marker": IMPORT_MARKER_TAG,
+    }
+
 
 def configure_network(settings: Dict[str, Any], reset: bool = True) -> None:
     """Apply per-host HTTP pacing/retry/circuit-breaker settings."""
@@ -3659,6 +3792,10 @@ def main() -> None:
         stats = import_all(stash, settings, args)
         log("INFO", f"Finished: {stats}")
         print(json.dumps({"output": "ok", "stats": stats}))
+        return
+    if mode == "review_decision":
+        result = review_candidate_action(stash, settings, args)
+        print(json.dumps({"output": "ok", **result}))
         return
     # Hook context may be outside args in Stash v0.31.x.
     run_hook(stash, settings, payload)
