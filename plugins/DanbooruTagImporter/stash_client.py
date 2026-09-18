@@ -167,19 +167,11 @@ class Stash:
             if len(output) <= VISUAL_SEARCH_MAX_UPLOAD_BYTES:
                 return output
 
-        if smallest is not None and len(smallest) < len(data):
-            # Do not send a known-oversized payload to the provider. A still-large
-            # result is surfaced cleanly as retryable instead of provoking nginx 413.
-            raise RuntimeError(
-                "Stash visual-search image remained too large after FFmpeg resize "
-                f"({len(smallest)} bytes; limit {VISUAL_SEARCH_MAX_UPLOAD_BYTES})"
-            )
-
-        detail = f": {last_error}" if last_error else ""
-        raise RuntimeError(
-            "Stash thumbnail fell back to an oversized source image and could not "
-            f"be resized for visual search{detail}"
-        )
+        # If FFmpeg is unavailable or cannot decode this particular source, keep
+        # the original bytes for providers that may accept them. SauceNAO performs
+        # its own local size guard and will return RETRY LATER without making an
+        # oversized HTTP request.
+        return data
 
     def image_bytes(self, image_id: str) -> bytes:
         """Read a bounded Stash thumbnail for reverse-image search.
