@@ -3290,10 +3290,10 @@ def process_image(
 def _is_supported_booru_url(url: str) -> bool:
     text = str(url or "").strip()
     return bool(
-        re.search(r"danbooru\\.donmai\\.us/posts/\\d+", text)
-        or re.search(r"gelbooru\\.com/.*[?&]id=\\d+", text)
-        or re.search(r"rule34\\.xxx/.*[?&]id=\\d+", text)
-        or re.search(r"e621\\.net/posts/\\d+", text)
+        re.search(r"danbooru\.donmai\.us/posts/\d+", text)
+        or re.search(r"gelbooru\.com/.*[?&]id=\d+", text)
+        or re.search(r"rule34\.xxx/.*[?&]id=\d+", text)
+        or re.search(r"e621\.net/posts/\d+", text)
     )
 
 
