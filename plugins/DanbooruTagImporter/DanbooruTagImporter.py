@@ -1054,6 +1054,8 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
         diagnostics["minimum_similarity"] = minimum_similarity
     ranked.sort(key=lambda x:x[0],reverse=True)
     for sim,data in ranked:
+        if not isinstance(data, dict):
+            continue
         did=data.get("danbooru_id")
         if did:
             post=danbooru_post_by_id(str(did),danbooru_login,danbooru_api_key)
@@ -1064,27 +1066,74 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
             post=e621_post_by_id(str(eid),e621_username,e621_api_key)
             if post:
                 post["_saucenao_score"]=sim; return "e621",post
+
+        kid=data.get("konachan_id")
+        if kid:
+            post=moebooru_post_by_id("https://konachan.com",str(kid),"Konachan")
+            if post:
+                post["_saucenao_score"]=sim
+                post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                return "konachan",post
+
+        yid=data.get("yandere_id")
+        if yid:
+            post=moebooru_post_by_id("https://yande.re",str(yid),"Yande.re")
+            if post:
+                post["_saucenao_score"]=sim
+                post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                return "yandere",post
+
         urls=data.get("ext_urls") or []
-        if isinstance(urls,str): urls=[urls]
+        if isinstance(urls,str):
+            urls=[urls]
         for u in urls:
             u=str(u)
-            import re
-            m=re.search(r'danbooru\\.donmai\\.us/posts/(\\d+)',u)
+            m=re.search(r'danbooru\.donmai\.us/posts/(\d+)',u)
             if m:
                 post=danbooru_post_by_id(m.group(1),danbooru_login,danbooru_api_key)
-                if post: post["_saucenao_score"]=sim; return "danbooru",post
-            m=re.search(r'gelbooru\\.com/.*[?&]id=(\\d+)',u)
+                if post:
+                    post["_saucenao_score"]=sim; return "danbooru",post
+            m=re.search(r'gelbooru\.com/.*[?&]id=(\d+)',u)
             if m:
                 post=gelbooru_style_post_by_id(GELBOORU_BASE,m.group(1),"Gelbooru",gelbooru_api_key,gelbooru_user_id)
-                if post: post["_saucenao_score"]=sim; return "gelbooru",post
-            m=re.search(r'rule34\\.xxx/.*[?&]id=(\\d+)',u)
+                if post:
+                    post["_saucenao_score"]=sim; return "gelbooru",post
+            m=re.search(r'rule34\.xxx/.*[?&]id=(\d+)',u)
             if m and rule34_api_key and rule34_user_id:
                 post=gelbooru_style_post_by_id(RULE34_BASE,m.group(1),"Rule34",rule34_api_key,rule34_user_id,True)
-                if post: post["_saucenao_score"]=sim; return "rule34",post
-            m=re.search(r'e621\\.net/posts/(\\d+)',u)
+                if post:
+                    post["_saucenao_score"]=sim; return "rule34",post
+            m=re.search(r'e621\.net/posts/(\d+)',u)
             if m:
                 post=e621_post_by_id(m.group(1),e621_username,e621_api_key)
-                if post: post["_saucenao_score"]=sim; return "e621",post
+                if post:
+                    post["_saucenao_score"]=sim; return "e621",post
+            m=re.search(r'konachan\.com/post/show/(\d+)',u)
+            if m:
+                post=moebooru_post_by_id("https://konachan.com",m.group(1),"Konachan")
+                if post:
+                    post["_saucenao_score"]=sim
+                    post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                    post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                    return "konachan",post
+            m=re.search(r'yande\.re/post/show/(\d+)',u)
+            if m:
+                post=moebooru_post_by_id("https://yande.re",m.group(1),"Yande.re")
+                if post:
+                    post["_saucenao_score"]=sim
+                    post["_source_artists"]=_saucenao_name_list(data.get("creator"))
+                    post["_source_characters"]=_saucenao_name_list(data.get("characters"))
+                    return "yandere",post
+
+        header={}
+        for item in results:
+            if isinstance(item,dict) and item.get("data") is data:
+                header=item.get("header") or {}
+                break
+        return "saucenao_external", _saucenao_external_post(header,data,sim)
+
     return None
 
 
