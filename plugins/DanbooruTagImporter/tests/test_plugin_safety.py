@@ -474,9 +474,17 @@ class PluginSafetyTests(unittest.TestCase):
 
     def test_saucenao_confidence_bands(self):
         self.assertEqual(plugin._visual_confidence(96.0, 95.0, 85.0), "HIGH")
+        self.assertEqual(plugin._visual_confidence(94.96, 95.0, 85.0), "HIGH")
+        self.assertEqual(plugin._visual_confidence(94.94, 95.0, 85.0), "REVIEW")
         self.assertEqual(plugin._visual_confidence(94.0, 95.0, 85.0), "REVIEW")
         self.assertEqual(plugin._visual_confidence(85.0, 95.0, 85.0), "REVIEW")
-        self.assertEqual(plugin._visual_confidence(84.9, 95.0, 85.0), "LOW")
+        self.assertEqual(plugin._visual_confidence(84.94, 95.0, 85.0), "LOW")
+        self.assertEqual(plugin._visual_confidence(84.96, 95.0, 85.0), "REVIEW")
+
+    def test_saucenao_score_normalization_matches_one_decimal_display(self):
+        self.assertEqual(plugin._saucenao_policy_score(94.96), 95.0)
+        self.assertEqual(plugin._saucenao_policy_score(94.94), 94.9)
+        self.assertEqual(plugin._saucenao_policy_score(84.96), 85.0)
 
     def test_ambiguous_normalized_tag_key_is_not_auto_reused(self):
         cache = {
@@ -519,6 +527,80 @@ class PluginSafetyTests(unittest.TestCase):
             diagnostics["best_supported_url"],
             "https://danbooru.donmai.us/posts/12345",
         )
+
+    def test_saucenao_visible_95_is_eligible_for_auto_import(self):
+        import json
+
+        payload = {
+            "header": {"status": 0},
+            "results": [
+                {
+                    "header": {"similarity": "94.96"},
+                    "data": {"danbooru_id": 6906968},
+                }
+            ],
+        }
+
+        class JsonResponse:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        diagnostics = {}
+        resolved_post = {
+            "id": 6906968,
+            "tag_string_general": "",
+            "tag_string_artist": "",
+            "tag_string_character": "",
+            "tag_string_copyright": "",
+            "tag_string_meta": "",
+        }
+        with mock.patch.object(plugin.HTTP, "urlopen", return_value=JsonResponse()), \
+             mock.patch.object(plugin, "danbooru_post_by_id", return_value=resolved_post):
+            result = plugin.saucenao_resolve(
+                b"image", "key", 95.0, "", "", "", "", "", "",
+                diagnostics=diagnostics, requests_per_30_seconds=0.0,
+            )
+
+        self.assertIsNotNone(result)
+        source, post = result
+        self.assertEqual(source, "danbooru")
+        self.assertEqual(post["_saucenao_score"], 95.0)
+        self.assertEqual(diagnostics["best_supported_similarity"], 95.0)
+
+    def test_saucenao_visible_949_remains_below_auto_import(self):
+        import json
+
+        payload = {
+            "header": {"status": 0},
+            "results": [
+                {
+                    "header": {"similarity": "94.94"},
+                    "data": {"danbooru_id": 6906968},
+                }
+            ],
+        }
+
+        class JsonResponse:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        diagnostics = {}
+        with mock.patch.object(plugin.HTTP, "urlopen", return_value=JsonResponse()):
+            result = plugin.saucenao_resolve(
+                b"image", "key", 95.0, "", "", "", "", "", "",
+                diagnostics=diagnostics, requests_per_30_seconds=0.0,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(diagnostics["best_supported_similarity"], 94.9)
 
     def test_status_transition_is_mutually_exclusive(self):
         stash = ProcessFakeStash()
