@@ -1689,6 +1689,124 @@ def _equivalent_attached_performer_ids(
             duplicates.add(attached_id)
     return duplicates
 
+
+def _existing_performer_match(
+    name: str,
+    performer_cache: Dict[str, Dict[str, Any]],
+    *,
+    merge_normalized: bool,
+    merge_similar: bool,
+    similarity_threshold: float,
+    similarity_margin: float,
+) -> Optional[Dict[str, Any]]:
+    """Resolve an already-existing performer without creating a new record."""
+    key = str(name or "").casefold().strip()
+    existing = performer_cache.get(key)
+    if existing:
+        return existing
+    match = find_entity_match(
+        name,
+        performer_cache,
+        "alias_list",
+        allow_normalized=merge_normalized,
+        allow_fuzzy=merge_similar,
+        threshold=similarity_threshold,
+        margin=similarity_margin,
+    )
+    return match.entity if match else None
+
+
+def _resolve_performer_ids_for_image(
+    stash: Stash,
+    image: Dict[str, Any],
+    performer_names_to_attach: Iterable[str],
+    performer_cache: Dict[str, Dict[str, Any]],
+    *,
+    merge_normalized: bool,
+    merge_similar: bool,
+    similarity_threshold: float,
+    similarity_margin: float,
+    allow_create: bool = True,
+) -> set[str]:
+    """Return canonical performer IDs while preserving unrelated current performers."""
+    image_id = str(image.get("id") or "")
+    performer_ids = {
+        str(performer.get("id"))
+        for performer in (image.get("performers") or [])
+        if performer.get("id") is not None
+    }
+
+    for performer_name in performer_names_to_attach:
+        if allow_create:
+            performer_obj = ensure_performer(
+                stash,
+                performer_cache,
+                performer_name,
+                dry_run=False,
+                merge_normalized=merge_normalized,
+                merge_similar=merge_similar,
+                similarity_threshold=similarity_threshold,
+                similarity_margin=similarity_margin,
+            )
+        else:
+            existing = _existing_performer_match(
+                performer_name,
+                performer_cache,
+                merge_normalized=merge_normalized,
+                merge_similar=merge_similar,
+                similarity_threshold=similarity_threshold,
+                similarity_margin=similarity_margin,
+            )
+            performer_obj = None
+            if existing:
+                # Safe to call ensure_performer now: an existing match is known, so
+                # this can add the incoming alias but cannot create a replacement.
+                performer_obj = ensure_performer(
+                    stash,
+                    performer_cache,
+                    performer_name,
+                    dry_run=False,
+                    merge_normalized=merge_normalized,
+                    merge_similar=merge_similar,
+                    similarity_threshold=similarity_threshold,
+                    similarity_margin=similarity_margin,
+                )
+            else:
+                log(
+                    "WARNING",
+                    f"Image {image_id}: performer '{performer_name}' no longer resolves "
+                    "to a current Stash performer after cache refresh; skipping that "
+                    "performer rather than creating a duplicate during recovery.",
+                )
+
+        if not performer_obj:
+            continue
+
+        canonical_id = str(performer_obj["id"])
+        duplicate_ids = _equivalent_attached_performer_ids(
+            image, performer_cache, performer_name, performer_obj
+        )
+        if duplicate_ids:
+            performer_ids.difference_update(duplicate_ids)
+            log(
+                "INFO",
+                f"Image {image_id}: replaced duplicate performer attachment(s) "
+                f"{', '.join(sorted(duplicate_ids))} with canonical performer "
+                f"'{performer_obj.get('name')}' ({canonical_id})",
+            )
+        performer_ids.add(canonical_id)
+
+    return performer_ids
+
+
+def _is_performer_fk_failure(exc: BaseException) -> bool:
+    text = str(exc).casefold()
+    return (
+        "foreign key constraint failed" in text
+        and "performers_images" in text
+        and "imageupdate" in text
+    )
+
 def tag_names(post: Dict[str, Any], source: str, include_meta: bool, prefixes: bool = False) -> List[str]:
     """Extract tag names from supported source post metadata."""
     if source in {"gelbooru", "rule34"}:
@@ -3314,29 +3432,17 @@ def process_image(
             return "matched_local_phash"
         return f"matched_{source}"
 
-    performer_ids_to_attach = set(existing_performer_ids)
-    for performer_name in performers:
-        performer_obj = ensure_performer(
-            stash, performer_cache, performer_name, dry_run=False,
-            merge_normalized=merge_normalized_performers,
-            merge_similar=merge_similar_performers,
-            similarity_threshold=performer_similarity_threshold,
-            similarity_margin=entity_similarity_margin,
-        )
-        if performer_obj:
-            canonical_id = str(performer_obj["id"])
-            duplicate_ids = _equivalent_attached_performer_ids(
-                image, performer_cache, performer_name, performer_obj
-            )
-            if duplicate_ids:
-                performer_ids_to_attach.difference_update(duplicate_ids)
-                log(
-                    "INFO",
-                    f"Image {iid}: replaced duplicate performer attachment(s) "
-                    f"{', '.join(sorted(duplicate_ids))} with canonical performer "
-                    f"'{performer_obj.get('name')}' ({canonical_id})",
-                )
-            performer_ids_to_attach.add(canonical_id)
+    performer_ids_to_attach = _resolve_performer_ids_for_image(
+        stash,
+        image,
+        performers,
+        performer_cache,
+        merge_normalized=merge_normalized_performers,
+        merge_similar=merge_similar_performers,
+        similarity_threshold=performer_similarity_threshold,
+        similarity_margin=entity_similarity_margin,
+        allow_create=True,
+    )
 
     ensured_studios: List[Dict[str, Any]] = []
     for artist in studio_targets:
@@ -3380,13 +3486,53 @@ def process_image(
     result_prefix = "unchanged"
 
     if tags_changed or studio_changed or performers_changed or date_changed or urls_changed:
-        stash.update_image_tags(
-            iid, merged,
-            studio_id=studio_id_to_assign,
-            performer_ids=sorted(performer_ids_to_attach),
-            date=target_date,
-            urls=target_urls,
-        )
+        try:
+            stash.update_image_tags(
+                iid, merged,
+                studio_id=studio_id_to_assign,
+                performer_ids=sorted(performer_ids_to_attach),
+                date=target_date,
+                urls=target_urls,
+            )
+        except RuntimeError as exc:
+            if not _is_performer_fk_failure(exc):
+                raise
+
+            # A performer can be merged/deleted in Stash after this scan's caches
+            # were loaded. Refresh both the image and performer cache so any old ID
+            # is replaced by the surviving canonical performer before retrying once.
+            log(
+                "WARNING",
+                f"Image {iid}: stale performer ID detected during image update; "
+                "refreshing Stash performers and retrying with canonical IDs.",
+            )
+            fresh_image = stash.find_image(iid)
+            if not fresh_image:
+                raise
+
+            performer_cache.clear()
+            performer_cache.update(stash.all_performers())
+            performer_ids_to_attach = _resolve_performer_ids_for_image(
+                stash,
+                fresh_image,
+                performers,
+                performer_cache,
+                merge_normalized=merge_normalized_performers,
+                merge_similar=merge_similar_performers,
+                similarity_threshold=performer_similarity_threshold,
+                similarity_margin=entity_similarity_margin,
+                allow_create=False,
+            )
+            image["performers"] = list(fresh_image.get("performers") or [])
+
+            stash.update_image_tags(
+                iid, merged,
+                studio_id=studio_id_to_assign,
+                performer_ids=sorted(performer_ids_to_attach),
+                date=target_date,
+                urls=target_urls,
+            )
+
         final_studio = assigned_studio or current_studio
         _refresh_image_metadata_for_index(
             image, merged, tag_cache, sorted(performer_ids_to_attach), performer_cache,
