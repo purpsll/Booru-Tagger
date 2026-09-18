@@ -1799,13 +1799,24 @@ def _resolve_performer_ids_for_image(
     return performer_ids
 
 
-def _is_performer_fk_failure(exc: BaseException) -> bool:
+def _relation_fk_failure_kind(exc: BaseException) -> Optional[str]:
+    """Classify stale Stash image relation failures that are safe to refresh/retry."""
     text = str(exc).casefold()
-    return (
-        "foreign key constraint failed" in text
-        and "performers_images" in text
-        and "imageupdate" in text
-    )
+    if "foreign key constraint failed" not in text or "imageupdate" not in text:
+        return None
+    if "performers_images" in text:
+        return "performer"
+    if "images_tags" in text:
+        return "tag"
+    return None
+
+
+def _is_performer_fk_failure(exc: BaseException) -> bool:
+    return _relation_fk_failure_kind(exc) == "performer"
+
+
+def _is_tag_fk_failure(exc: BaseException) -> bool:
+    return _relation_fk_failure_kind(exc) == "tag"
 
 def tag_names(post: Dict[str, Any], source: str, include_meta: bool, prefixes: bool = False) -> List[str]:
     """Extract tag names from supported source post metadata."""
@@ -2123,6 +2134,55 @@ def ensure_tags(
         ids.append(str(created["id"]))
         log("INFO", f"Created Stash tag: {name}")
 
+    return ids
+
+
+def resolve_existing_tag_ids(
+    cache: Dict[str, Dict[str, str]],
+    names: Iterable[str],
+    *,
+    merge_similar: bool,
+    similarity_threshold: float,
+    similarity_margin: float,
+    normalized_index: Dict[str, Dict[str, str]],
+    similarity_buckets: Dict[Tuple[str, int], List[Tuple[str, Dict[str, str]]]],
+    image_id: str = "",
+) -> List[str]:
+    """Resolve current canonical tag IDs without creating replacement tags.
+
+    Used only after Stash reports a stale images_tags foreign-key failure. The
+    refreshed cache includes aliases, so a source tag that was merged in Stash
+    resolves directly to the surviving canonical tag.
+    """
+    ids: List[str] = []
+    seen: set[str] = set()
+    for raw_name in names:
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        existing = cache.get(name.casefold())
+        if existing is None and merge_similar:
+            existing = find_similar_existing_tag(
+                name,
+                cache,
+                normalized_index,
+                similarity_threshold,
+                similarity_buckets,
+                similarity_margin,
+            )
+        if existing:
+            tag_id = str(existing.get("id") or "")
+            if tag_id and tag_id not in seen:
+                seen.add(tag_id)
+                ids.append(tag_id)
+            continue
+        if image_id:
+            log(
+                "WARNING",
+                f"Image {image_id}: tag '{name}' no longer resolves to a current "
+                "Stash tag after cache refresh; skipping it during stale-ID recovery "
+                "instead of recreating a deleted tag.",
+            )
     return ids
 
 
@@ -3486,52 +3546,93 @@ def process_image(
     result_prefix = "unchanged"
 
     if tags_changed or studio_changed or performers_changed or date_changed or urls_changed:
-        try:
-            stash.update_image_tags(
-                iid, merged,
-                studio_id=studio_id_to_assign,
-                performer_ids=sorted(performer_ids_to_attach),
-                date=target_date,
-                urls=target_urls,
-            )
-        except RuntimeError as exc:
-            if not _is_performer_fk_failure(exc):
-                raise
+        recovered_relations: set[str] = set()
+        while True:
+            try:
+                stash.update_image_tags(
+                    iid, merged,
+                    studio_id=studio_id_to_assign,
+                    performer_ids=sorted(performer_ids_to_attach),
+                    date=target_date,
+                    urls=target_urls,
+                )
+                break
+            except RuntimeError as exc:
+                relation_kind = _relation_fk_failure_kind(exc)
+                if relation_kind is None or relation_kind in recovered_relations:
+                    raise
+                recovered_relations.add(relation_kind)
 
-            # A performer can be merged/deleted in Stash after this scan's caches
-            # were loaded. Refresh both the image and performer cache so any old ID
-            # is replaced by the surviving canonical performer before retrying once.
-            log(
-                "WARNING",
-                f"Image {iid}: stale performer ID detected during image update; "
-                "refreshing Stash performers and retrying with canonical IDs.",
-            )
-            fresh_image = stash.find_image(iid)
-            if not fresh_image:
-                raise
+                fresh_image = stash.find_image(iid)
+                if not fresh_image:
+                    raise
 
-            performer_cache.clear()
-            performer_cache.update(stash.all_performers())
-            performer_ids_to_attach = _resolve_performer_ids_for_image(
-                stash,
-                fresh_image,
-                performers,
-                performer_cache,
-                merge_normalized=merge_normalized_performers,
-                merge_similar=merge_similar_performers,
-                similarity_threshold=performer_similarity_threshold,
-                similarity_margin=entity_similarity_margin,
-                allow_create=False,
-            )
-            image["performers"] = list(fresh_image.get("performers") or [])
+                if relation_kind == "performer":
+                    # A performer was merged/deleted after this scan cached its ID.
+                    # Re-read Stash so aliases resolve to the surviving canonical
+                    # performer, preserve unrelated current performers, and retry.
+                    log(
+                        "WARNING",
+                        f"Image {iid}: stale performer ID detected during image update; "
+                        "refreshing Stash performers and retrying with canonical IDs.",
+                    )
+                    performer_cache.clear()
+                    performer_cache.update(stash.all_performers())
+                    performer_ids_to_attach = _resolve_performer_ids_for_image(
+                        stash,
+                        fresh_image,
+                        performers,
+                        performer_cache,
+                        merge_normalized=merge_normalized_performers,
+                        merge_similar=merge_similar_performers,
+                        similarity_threshold=performer_similarity_threshold,
+                        similarity_margin=entity_similarity_margin,
+                        allow_create=False,
+                    )
+                    image["performers"] = list(fresh_image.get("performers") or [])
+                    continue
 
-            stash.update_image_tags(
-                iid, merged,
-                studio_id=studio_id_to_assign,
-                performer_ids=sorted(performer_ids_to_attach),
-                date=target_date,
-                urls=target_urls,
-            )
+                # A tag was merged/deleted after this scan cached its ID. Stash's
+                # tag merge moves existing image relationships to the destination
+                # and stores the old tag name as an alias. Reload both the current
+                # image and alias-aware tag cache, rebuild the complete tag set,
+                # and retry with only current canonical IDs.
+                log(
+                    "WARNING",
+                    f"Image {iid}: stale tag ID detected during image update; "
+                    "refreshing Stash tags and retrying with canonical IDs.",
+                )
+                tag_cache.clear()
+                tag_cache.update(stash.all_tags())
+
+                normalized_tag_index.clear()
+                normalized_tag_index.update(build_normalized_tag_index(tag_cache))
+                similarity_buckets.clear()
+                similarity_buckets.update(
+                    build_similarity_buckets(normalized_tag_index)
+                )
+
+                imported_ids = resolve_existing_tag_ids(
+                    tag_cache,
+                    names,
+                    merge_similar=merge_similar,
+                    similarity_threshold=similar_threshold,
+                    similarity_margin=tag_similarity_margin,
+                    normalized_index=normalized_tag_index,
+                    similarity_buckets=similarity_buckets,
+                    image_id=iid,
+                )
+                marker_id = ensure_import_marker_tag(
+                    stash,
+                    tag_cache,
+                    normalized_tag_index,
+                    similarity_buckets,
+                )
+                clean_existing_ids = _non_status_tag_ids(fresh_image)
+                merged = list(
+                    dict.fromkeys([*clean_existing_ids, *imported_ids, marker_id])
+                )
+                image["tags"] = list(fresh_image.get("tags") or [])
 
         final_studio = assigned_studio or current_studio
         _refresh_image_metadata_for_index(
