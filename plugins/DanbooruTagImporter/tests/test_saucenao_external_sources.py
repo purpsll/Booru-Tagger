@@ -115,6 +115,23 @@ class SauceNaoExternalSourceTests(unittest.TestCase):
         )
         self.assertFalse(plugin.can_mark_no_match([outcome]))
 
+    def test_review_band_external_hit_is_inconclusive_not_no_match(self):
+        self.assertTrue(
+            plugin._saucenao_strong_unsupported_is_inconclusive(
+                90.0,
+                0.0,
+                85.0,
+            )
+        )
+        outcome = plugin.LookupOutcome(
+            "SauceNAO",
+            "visual",
+            plugin.LookupStatus.UNAVAILABLE,
+            None,
+            "strong visual match from unsupported source (90.0%)",
+        )
+        self.assertFalse(plugin.can_mark_no_match([outcome]))
+
     def test_konachan_match_fetches_authoritative_tags(self):
         sauce_payload = {
             "header": {
