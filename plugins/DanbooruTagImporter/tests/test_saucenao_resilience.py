@@ -75,6 +75,45 @@ class SauceNaoResilienceTests(unittest.TestCase):
         self.assertEqual(plugin._SAUCENAO_OUTAGE_STREAK, 0)
 
 
+    def test_oversized_payload_is_rejected_before_http(self):
+        oversized = b"x" * (plugin.VISUAL_SEARCH_MAX_UPLOAD_BYTES + 1)
+        with mock.patch.object(plugin, "_saucenao_wait_for_slot") as wait_for_slot, \
+             mock.patch.object(plugin.HTTP, "urlopen") as urlopen:
+            with self.assertRaises(RuntimeError) as raised:
+                plugin.saucenao_resolve(
+                    oversized, "key", 94.0, "", "", "", "", "", ""
+                )
+
+        self.assertIn("upload skipped locally", str(raised.exception))
+        self.assertIn("too large", str(raised.exception))
+        wait_for_slot.assert_not_called()
+        urlopen.assert_not_called()
+
+    def test_http_413_html_body_is_not_logged_or_returned(self):
+        html = (
+            b"<html><body><h1>413 Request Entity Too Large</h1>"
+            b"<hr><center>nginx</center></body></html>"
+        )
+        error = urllib.error.HTTPError(
+            plugin.SAUCENAO_BASE,
+            413,
+            "Request Entity Too Large",
+            {},
+            io.BytesIO(html),
+        )
+        with mock.patch.object(plugin, "_saucenao_wait_for_slot", return_value=0.0), \
+             mock.patch.object(plugin.HTTP, "urlopen", side_effect=error):
+            with self.assertRaises(RuntimeError) as raised:
+                plugin.saucenao_resolve(
+                    b"image", "key", 94.0, "", "", "", "", "", ""
+                )
+
+        message = str(raised.exception)
+        self.assertIn("HTTP 413", message)
+        self.assertIn("remain pending", message)
+        self.assertNotIn("<html", message.casefold())
+        self.assertFalse(plugin._saucenao_is_disabled())
+
     def test_http_500_html_body_is_clean_and_next_image_retries(self):
         html = (
             b'<!DOCTYPE html><html><head><meta http-equiv="Content-Type" '
