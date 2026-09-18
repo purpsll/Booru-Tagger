@@ -3705,6 +3705,8 @@ def process_image(
     desired_studio_name = studio_targets[0] if studio_targets else None
 
     current_studio = image.get("studio")
+    current_title = str(image.get("title") or "").strip()
+    current_photographer = str(image.get("photographer") or "").strip()
     current_date = str(image.get("date") or "").strip()
     original_current_urls = [
         str(u).strip() for u in (image.get("urls") or []) if str(u).strip()
@@ -3736,6 +3738,16 @@ def process_image(
     current_url_keys = {u.casefold() for u in current_urls}
     desired_source_url = source_post_url(source, post)
     desired_source_date = source_post_date(source, post)
+    desired_source_title = (
+        str(post.get("_source_title") or "").strip()
+        if source == "saucenao_external"
+        else ""
+    )
+    desired_source_photographer = (
+        ", ".join(str(v).strip() for v in (post.get("_source_artists") or []) if str(v).strip())
+        if source == "saucenao_external"
+        else ""
+    )
     existing_performer_ids = {str(p["id"]) for p in image.get("performers") or []}
     existing_ids = {str(tag["id"]) for tag in image.get("tags") or []}
 
@@ -3819,6 +3831,10 @@ def process_image(
             source_meta_note += f"; date {desired_source_date} would be set"
         if desired_source_url and desired_source_url.casefold() not in current_url_keys:
             source_meta_note += "; source URL would be appended"
+        if desired_source_title and not current_title:
+            source_meta_note += f"; title '{desired_source_title}' would be set"
+        if desired_source_photographer and not current_photographer:
+            source_meta_note += f"; creator '{desired_source_photographer}' would be set"
 
         log(
             "INFO",
@@ -3881,6 +3897,12 @@ def process_image(
     marker_id = ensure_import_marker_tag(stash, tag_cache, normalized_tag_index, similarity_buckets)
     merged = list(dict.fromkeys([*clean_existing_ids, *imported_ids, marker_id]))
     target_date = desired_source_date if (desired_source_date and not current_date) else None
+    target_title = desired_source_title if (desired_source_title and not current_title) else None
+    target_photographer = (
+        desired_source_photographer
+        if (desired_source_photographer and not current_photographer)
+        else None
+    )
     target_urls = current_urls if current_urls != original_current_urls else None
     if desired_source_url and desired_source_url.casefold() not in current_url_keys:
         target_urls = [*current_urls, desired_source_url]
@@ -3890,9 +3912,19 @@ def process_image(
     performers_changed = performer_ids_to_attach != existing_performer_ids
     date_changed = target_date is not None
     urls_changed = target_urls is not None
+    title_changed = target_title is not None
+    photographer_changed = target_photographer is not None
     result_prefix = "unchanged"
 
-    if tags_changed or studio_changed or performers_changed or date_changed or urls_changed:
+    if (
+        tags_changed
+        or studio_changed
+        or performers_changed
+        or date_changed
+        or urls_changed
+        or title_changed
+        or photographer_changed
+    ):
         recovered_relations: set[str] = set()
         while True:
             try:
@@ -3902,6 +3934,8 @@ def process_image(
                     performer_ids=sorted(performer_ids_to_attach),
                     date=target_date,
                     urls=target_urls,
+                    title=target_title,
+                    photographer=target_photographer,
                 )
                 break
             except RuntimeError as exc:
@@ -4001,7 +4035,9 @@ def process_image(
             + (f"; assigned studio '{assigned_studio.get('name')}'" if assigned_studio else "")
             + (f"; attached {len(performers)} performer(s)" if performers else "")
             + (f"; set date {target_date}" if target_date else "")
-            + ("; appended source URL" if target_urls is not None else ""),
+            + ("; appended source URL" if target_urls is not None else "")
+            + (f"; set title '{target_title}'" if target_title else "")
+            + (f"; set creator '{target_photographer}'" if target_photographer else ""),
         )
     else:
         log("INFO", f"Image {iid} already has all {source_label} #{post.get('id')} metadata")
