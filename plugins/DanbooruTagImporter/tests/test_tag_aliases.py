@@ -42,6 +42,63 @@ class TagAliasTests(unittest.TestCase):
         self.assertEqual(tags["big_penis"]["id"], "7")
         self.assertEqual(tags["big_penis"]["name"], "large_penis")
 
+    def test_recovery_resolves_merged_tag_alias_to_canonical_id(self):
+        canonical = {
+            "id": "7000",
+            "name": "canonical_tag",
+            "aliases": ["old_merged_tag"],
+        }
+        cache = {
+            "canonical_tag": canonical,
+            "old_merged_tag": canonical,
+        }
+        normalized = plugin.build_normalized_tag_index(cache)
+        buckets = plugin.build_similarity_buckets(normalized)
+
+        ids = plugin.resolve_existing_tag_ids(
+            cache,
+            ["old_merged_tag"],
+            merge_similar=True,
+            similarity_threshold=0.96,
+            similarity_margin=0.02,
+            normalized_index=normalized,
+            similarity_buckets=buckets,
+            image_id="3419",
+        )
+
+        self.assertEqual(ids, ["7000"])
+
+    def test_recovery_skips_deleted_tag_instead_of_recreating(self):
+        ids = plugin.resolve_existing_tag_ids(
+            {},
+            ["deleted_tag"],
+            merge_similar=True,
+            similarity_threshold=0.96,
+            similarity_margin=0.02,
+            normalized_index={},
+            similarity_buckets={},
+            image_id="3419",
+        )
+
+        self.assertEqual(ids, [])
+
+    def test_relation_fk_classifier_handles_tags_and_performers(self):
+        tag_error = RuntimeError(
+            "Stash GraphQL error: error executing INSERT INTO images_tags "
+            "(image_id, tag_id) VALUES (?, ?) [[3419 6558]]: "
+            "FOREIGN KEY constraint failed path imageUpdate"
+        )
+        performer_error = RuntimeError(
+            "Stash GraphQL error: error executing INSERT INTO performers_images "
+            "(image_id, performer_id) VALUES (?, ?) [[5597 297]]: "
+            "FOREIGN KEY constraint failed path imageUpdate"
+        )
+        other_error = RuntimeError("FOREIGN KEY constraint failed")
+
+        self.assertEqual(plugin._relation_fk_failure_kind(tag_error), "tag")
+        self.assertEqual(plugin._relation_fk_failure_kind(performer_error), "performer")
+        self.assertIsNone(plugin._relation_fk_failure_kind(other_error))
+
     def test_ensure_tags_recovers_if_alias_is_added_after_cache_load(self):
         canonical = {
             "id": "7",
