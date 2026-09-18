@@ -87,38 +87,36 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.13
+          ## Booru Importer v3.26.14
 
-          This release fixes a SauceNAO confidence-boundary mismatch where a result displayed as 95.0% could still be sent to Review instead of being imported.
+          This release lowers SauceNAO's automatic-import threshold to a displayed **94.0%**.
 
-          ### Fixed: visible 95.0% now means HIGH
+          ### SauceNAO confidence policy
 
-          SauceNAO similarity is now normalized to the same one-decimal value shown in plugin logs and the Review UI before confidence thresholds are applied.
+          - **94.0% and higher → automatic import**
+          - **85.0–93.9% → Multi-Booru Review**
+          - **Below 85.0% → non-qualifying SauceNAO result**
 
-          - A raw score such as **94.96** is displayed as **95.0%** and is now treated as **HIGH**, so it imports automatically.
-          - A raw score such as **94.94** is displayed as **94.9%** and remains in the Review band.
-          - The Review floor still starts at displayed **85.0%**.
-          - The automatic-import threshold remains displayed **95.0%+**.
+          SauceNAO confidence is still normalized to the same one-decimal value shown in logs and the Review panel before thresholds are applied.
 
-          This removes cases like:
-
-          `SauceNAO: supported review candidate 95.0% not auto-accepted (HIGH starts at 95.0%)`
-
-          The score shown to the user and the score used by the importer now follow the same rule.
+          Examples:
+          - Raw **93.96** → displayed **94.0%** → **HIGH** → automatic import
+          - Raw **93.94** → displayed **93.9%** → **Review**
+          - Displayed **94.0%** will no longer be written as a Review candidate.
 
           ### Existing behavior retained
 
-          - SauceNAO 85.0–94.9% remains `Multi-Booru Review`.
-          - Review confidence display and Yes/No image-page controls from v3.26.12 remain unchanged.
-          - e621 pacing, SauceNAO outage handling, Retry Later safeguards, source metadata import, artist/Studio mapping, and character/Performer mapping are unchanged.
+          - Review candidates still show the persisted SauceNAO confidence on the individual image page.
+          - **Yes — import this source** imports all normal metadata from that exact source.
+          - **No — mark No Match** removes the rejected candidate and writes `Multi-Booru No Match`.
+          - e621 pacing, SauceNAO outage handling, Retry Later safeguards, metadata preservation, Studio/artist mapping, and Performer/character mapping are unchanged.
           - Stable internal package ID remains `DanbooruTagImporter`.
 
           ### Validation
 
           - Full regression suite passes with **101 tests**.
-          - Added direct coverage for raw 94.96 → displayed 95.0 → auto-import.
-          - Added direct coverage for raw 94.94 → displayed 94.9 → Review.
-          - Python compilation, JavaScript syntax, generated Stash feed, and release ZIP checks all pass.
+          - Tests verify displayed 94.0% is auto-imported and displayed 93.9% remains Review.
+          - Python compilation, JavaScript syntax, documentation checks, generated Stash feed, and release ZIP checks all pass.
 
           ### Update
 
@@ -126,11 +124,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based installs should show **Booru Importer 3.26.13** under **Installed Plugins → Update**.
+          Existing source-based installs should show **Booru Importer 3.26.14** under **Installed Plugins → Update**.
 
           ### Manual installation
 
-          Download **`Booru-Importer-v3.26.13.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.14.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
 
           EOF
 
