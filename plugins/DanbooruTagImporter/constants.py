@@ -53,6 +53,11 @@ ENABLE_SAUCENAO = True
 DEEP_VISUAL_TIMEOUT_SECONDS = 30.0
 DEEP_VISUAL_HTTP_RETRIES = 0
 DEEP_VISUAL_MAX_WORKERS = 2
+# Reverse-search providers do not need the full source file. Stash normally
+# supplies a 640px thumbnail, but unsupported thumbnail formats can fall back
+# to the original image. Bound those rare fallback payloads before upload.
+VISUAL_SEARCH_MAX_DIMENSION = 640
+VISUAL_SEARCH_MAX_UPLOAD_BYTES = 1_000_000
 SAUCENAO_HIGH_CONFIDENCE = 94.0
 SAUCENAO_REVIEW_MINIMUM = 85.0
 # REVIEW-band results are deliberately review-only. This prevents a stale Stash
