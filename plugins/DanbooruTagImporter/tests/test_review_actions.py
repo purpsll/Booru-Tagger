@@ -18,7 +18,7 @@ spec.loader.exec_module(plugin)
 
 
 CANDIDATE_URL = "https://danbooru.donmai.us/posts/12345"
-REVIEW_URL = CANDIDATE_URL + "#booru-importer-review-confidence=89.4"\n
+REVIEW_URL = CANDIDATE_URL + "#booru-importer-review-confidence=89.4"
 
 class ReviewFakeStash:
     def __init__(self, image):
