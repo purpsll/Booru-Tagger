@@ -50,6 +50,40 @@ class PerformerAttachmentTests(unittest.TestCase):
         self.assertIn("cindy_the_marten", result["alias_list"])
         self.assertEqual(cache["cindy_the_marten"]["id"], "10")
 
+    def test_exact_alias_match_attaches_canonical_performer(self):
+        canonical = {
+            "id": "10",
+            "name": "Cindy the Marten",
+            "alias_list": ["cindy_the_marten"],
+        }
+        cache = {
+            "cindy the marten": canonical,
+            "cindy_the_marten": canonical,
+        }
+
+        class FakeStash:
+            def create_performer(self, name):
+                raise AssertionError("alias match must not create a new performer")
+
+            def update_performer_aliases(self, performer_id, aliases):
+                raise AssertionError("existing exact alias should not need an alias update")
+
+            def all_performers(self):
+                return cache
+
+        result = plugin.ensure_performer(
+            FakeStash(),
+            cache,
+            "cindy_the_marten",
+            dry_run=False,
+            merge_normalized=True,
+            merge_similar=True,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], "10")
+        self.assertEqual(result["name"], "Cindy the Marten")
+
     def test_duplicate_attachment_is_replaced_by_canonical_id(self):
         canonical = {
             "id": "10",
