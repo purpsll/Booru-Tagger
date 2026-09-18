@@ -2089,8 +2089,18 @@ def transition_image_status(
     target_urls: Optional[List[str]] = None
     if extra_url:
         url = str(extra_url).strip()
-        if url and url.casefold() not in {u.casefold() for u in current_urls}:
-            target_urls = [*current_urls, url]
+        if url:
+            # REVIEW uses URL ordering to identify the active proposed candidate in
+            # the image-page UI. Preserve every other URL, de-duplicate the candidate,
+            # and keep the active candidate last even if it was already present.
+            reordered_urls = [
+                existing_url
+                for existing_url in current_urls
+                if existing_url.casefold() != url.casefold()
+            ]
+            reordered_urls.append(url)
+            if reordered_urls != current_urls:
+                target_urls = reordered_urls
 
     changed = set(final_ids) != set(current_ids) or target_urls is not None
     if changed:
