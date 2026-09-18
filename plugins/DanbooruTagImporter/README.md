@@ -4,7 +4,7 @@ A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, an
 
 ## Release goals
 
-v3.26.14 keeps the Deep Match throughput improvements from v3.26.4 and changes e621 IQDB failure scope. A 429, Cloudflare challenge, timeout, or other transient e621 IQDB failure affects only the current image; the next image starts with e621 IQDB eligible again. The e621 host circuit is cleared per IQDB image while request pacing is preserved, so one bad request cannot disqualify the rest of a long queue. Repeated identical provider warnings are de-duplicated. Automatic SauceNAO acceptance is 94.0%+, while the Review floor is 85.0%, so 85.0–93.9% candidates require an explicit decision. Artist mapping behavior is unchanged.
+v3.26.14 lowers the SauceNAO automatic-import threshold to a displayed 94.0% while keeping the Review floor at 85.0%. Results displayed as 94.0% or higher auto-import; 85.0–93.9% candidates require an explicit decision. Existing Deep Match throughput, provider-retry safeguards, and artist mapping behavior are unchanged.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -59,7 +59,7 @@ Optional safety preview of the next ten Unresolved images. It performs the same 
 
 Processes only images carrying `Multi-Booru Unresolved`.
 
-For images already marked `Multi-Booru Unresolved` by the normal Fast Scan, v3.26.14 reuses that completed fast-stage result instead of repeating exact MD5 and local pHash lookups. Forced rechecks such as Review and No-Match retries still reevaluate the full lookup path.
+For images already marked `Multi-Booru Unresolved` by the normal Fast Scan, Deep Match reuses that completed fast-stage result instead of repeating exact MD5 and local pHash lookups. Forced rechecks such as Review and No-Match retries still reevaluate the full lookup path.
 
 Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and SauceNAO (when configured) are launched concurrently:
 
@@ -80,7 +80,7 @@ When an image is tagged `Multi-Booru Review`, the individual Stash image page di
 - **Yes — import this source:** resolves that exact Danbooru, Gelbooru, Rule34, or e621 post and sends it through the same normal metadata path used by automatic matches. Source tags, artist/Studio mapping, character/Performer mapping, source date, and canonical source URL follow the normal preservation rules, then the image becomes `Multi-Booru Imported`.
 - **No — mark No Match:** removes the rejected candidate URL, replaces the Review workflow marker with `Multi-Booru No Match`, and does not import candidate metadata.
 
-The UI validates that the chosen URL is still the active Review candidate before either action is applied. v3.26.14 also corrects the `ImageDetailPanel` `patch.after` callback signature for Stash v0.31.1 so React's second `{}` context argument is not mistaken for the rendered component. The confidence is stored only while the image is in Review using an internal URL fragment that the UI hides from the visible source link. On Yes, that internal marker is removed and only the canonical booru URL remains. Review items created before v3.26.14 display **Not recorded** until rechecked.
+The UI validates that the chosen URL is still the active Review candidate before either action is applied. The Stash v0.31.1 `ImageDetailPanel` callback compatibility fix from v3.26.11 remains in place. The confidence is stored only while the image is in Review using an internal URL fragment that the UI hides from the visible source link. On Yes, that internal marker is removed and only the canonical booru URL remains. Review items created before v3.26.12 display **Not recorded** until rechecked.
 
 ### 4. Recheck Review Candidates
 
