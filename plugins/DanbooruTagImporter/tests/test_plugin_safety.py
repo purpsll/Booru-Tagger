@@ -405,8 +405,8 @@ class PluginSafetyTests(unittest.TestCase):
 
         def sauce_miss(*args, **kwargs):
             kwargs["diagnostics"].update({
-                "best_similarity": 94.0,
-                "best_supported_similarity": 94.0,
+                "best_similarity": 93.0,
+                "best_supported_similarity": 93.0,
                 "best_supported_url": "https://danbooru.donmai.us/posts/123",
             })
             return None
@@ -431,7 +431,7 @@ class PluginSafetyTests(unittest.TestCase):
         stored_review_url = image_obj["urls"][-1]
         canonical_review_url, review_score = plugin._review_candidate_parts(stored_review_url)
         self.assertEqual(canonical_review_url, "https://danbooru.donmai.us/posts/123")
-        self.assertEqual(review_score, 94.0)
+        self.assertEqual(review_score, 93.0)
         self.assertEqual(metrics.get("saucenao_queries"), 1)
         self.assertEqual(metrics.get("saucenao_review_candidates"), 1)
 
@@ -468,22 +468,23 @@ class PluginSafetyTests(unittest.TestCase):
             "saucenao_review_min_similarity": 1,
             "saucenao_accept_review_band": True,
         })
-        self.assertEqual(high, 95.0)
+        self.assertEqual(high, 94.0)
         self.assertEqual(review, 85.0)
         self.assertFalse(accept)
 
     def test_saucenao_confidence_bands(self):
-        self.assertEqual(plugin._visual_confidence(96.0, 95.0, 85.0), "HIGH")
-        self.assertEqual(plugin._visual_confidence(94.96, 95.0, 85.0), "HIGH")
-        self.assertEqual(plugin._visual_confidence(94.94, 95.0, 85.0), "REVIEW")
-        self.assertEqual(plugin._visual_confidence(94.0, 95.0, 85.0), "REVIEW")
-        self.assertEqual(plugin._visual_confidence(85.0, 95.0, 85.0), "REVIEW")
-        self.assertEqual(plugin._visual_confidence(84.94, 95.0, 85.0), "LOW")
-        self.assertEqual(plugin._visual_confidence(84.96, 95.0, 85.0), "REVIEW")
+        self.assertEqual(plugin._visual_confidence(96.0, 94.0, 85.0), "HIGH")
+        self.assertEqual(plugin._visual_confidence(94.0, 94.0, 85.0), "HIGH")
+        self.assertEqual(plugin._visual_confidence(93.96, 94.0, 85.0), "HIGH")
+        self.assertEqual(plugin._visual_confidence(93.94, 94.0, 85.0), "REVIEW")
+        self.assertEqual(plugin._visual_confidence(93.9, 94.0, 85.0), "REVIEW")
+        self.assertEqual(plugin._visual_confidence(85.0, 94.0, 85.0), "REVIEW")
+        self.assertEqual(plugin._visual_confidence(84.94, 94.0, 85.0), "LOW")
+        self.assertEqual(plugin._visual_confidence(84.96, 94.0, 85.0), "REVIEW")
 
     def test_saucenao_score_normalization_matches_one_decimal_display(self):
-        self.assertEqual(plugin._saucenao_policy_score(94.96), 95.0)
-        self.assertEqual(plugin._saucenao_policy_score(94.94), 94.9)
+        self.assertEqual(plugin._saucenao_policy_score(93.96), 94.0)
+        self.assertEqual(plugin._saucenao_policy_score(93.94), 93.9)
         self.assertEqual(plugin._saucenao_policy_score(84.96), 85.0)
 
     def test_ambiguous_normalized_tag_key_is_not_auto_reused(self):
@@ -501,7 +502,7 @@ class PluginSafetyTests(unittest.TestCase):
             "header": {"status": 0},
             "results": [
                 {
-                    "header": {"similarity": "94.3"},
+                    "header": {"similarity": "93.3"},
                     "data": {"danbooru_id": 12345},
                 }
             ],
@@ -518,24 +519,24 @@ class PluginSafetyTests(unittest.TestCase):
         diagnostics = {}
         with mock.patch.object(plugin.HTTP, "urlopen", return_value=JsonResponse()):
             result = plugin.saucenao_resolve(
-                b"image", "key", 95.0, "", "", "", "", "", "",
+                b"image", "key", 94.0, "", "", "", "", "", "",
                 diagnostics=diagnostics, requests_per_30_seconds=0.0,
             )
         self.assertIsNone(result)
-        self.assertEqual(diagnostics["best_supported_similarity"], 94.3)
+        self.assertEqual(diagnostics["best_supported_similarity"], 93.3)
         self.assertEqual(
             diagnostics["best_supported_url"],
             "https://danbooru.donmai.us/posts/12345",
         )
 
-    def test_saucenao_visible_95_is_eligible_for_auto_import(self):
+    def test_saucenao_visible_94_is_eligible_for_auto_import(self):
         import json
 
         payload = {
             "header": {"status": 0},
             "results": [
                 {
-                    "header": {"similarity": "94.96"},
+                    "header": {"similarity": "93.96"},
                     "data": {"danbooru_id": 6906968},
                 }
             ],
@@ -568,17 +569,17 @@ class PluginSafetyTests(unittest.TestCase):
         self.assertIsNotNone(result)
         source, post = result
         self.assertEqual(source, "danbooru")
-        self.assertEqual(post["_saucenao_score"], 95.0)
-        self.assertEqual(diagnostics["best_supported_similarity"], 95.0)
+        self.assertEqual(post["_saucenao_score"], 94.0)
+        self.assertEqual(diagnostics["best_supported_similarity"], 94.0)
 
-    def test_saucenao_visible_949_remains_below_auto_import(self):
+    def test_saucenao_visible_939_remains_below_auto_import(self):
         import json
 
         payload = {
             "header": {"status": 0},
             "results": [
                 {
-                    "header": {"similarity": "94.94"},
+                    "header": {"similarity": "93.94"},
                     "data": {"danbooru_id": 6906968},
                 }
             ],
@@ -600,7 +601,7 @@ class PluginSafetyTests(unittest.TestCase):
             )
 
         self.assertIsNone(result)
-        self.assertEqual(diagnostics["best_supported_similarity"], 94.9)
+        self.assertEqual(diagnostics["best_supported_similarity"], 93.9)
 
     def test_status_transition_is_mutually_exclusive(self):
         stash = ProcessFakeStash()
