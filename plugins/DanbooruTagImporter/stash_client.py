@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-from constants import PLUGIN_ID, USER_AGENT
+from constants import (
+    PLUGIN_ID,
+    USER_AGENT,
+    VISUAL_SEARCH_MAX_DIMENSION,
+    VISUAL_SEARCH_MAX_UPLOAD_BYTES,
+)
 
 def connection_endpoint(conn: Dict[str, Any]) -> str:
     scheme = conn.get("Scheme") or conn.get("scheme") or "http"
@@ -65,6 +71,7 @@ class Stash:
         self.endpoint = connection_endpoint(conn)
         self.base_url = self.endpoint.rsplit("/graphql", 1)[0]
         self.headers = stash_headers(conn)
+        self._resolved_ffmpeg_path: Optional[str] = None
 
     def gql(self, query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         body = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
@@ -79,12 +86,107 @@ class Stash:
             raise RuntimeError(f"Stash GraphQL error: {payload['errors']}")
         return payload.get("data") or {}
 
-    def image_bytes(self, image_id: str) -> bytes:
-        """Read Stash's 640px thumbnail for reverse-image search.
+    def _ffmpeg_path(self) -> str:
+        """Return the exact FFmpeg binary Stash is already using."""
+        if self._resolved_ffmpeg_path is not None:
+            return self._resolved_ffmpeg_path
+        try:
+            data = self.gql(
+                "query PluginSystemStatus { systemStatus { ffmpegPath } }"
+            )
+            path = str((data.get("systemStatus") or {}).get("ffmpegPath") or "").strip()
+        except Exception:
+            path = ""
+        self._resolved_ffmpeg_path = path or "ffmpeg"
+        return self._resolved_ffmpeg_path
 
-        Stash generates/caches this representation locally. Sending the thumbnail
-        instead of the original full-resolution file dramatically reduces upload
-        time while preserving enough visual detail for IQDB/SauceNAO matching.
+    def _bounded_visual_search_bytes(self, data: bytes) -> bytes:
+        """Keep reverse-search uploads below a conservative request-size ceiling.
+
+        Stash's thumbnail route normally returns a 640px JPEG, but for formats it
+        cannot thumbnail it intentionally falls back to the original image. Those
+        originals can be many megabytes and SauceNAO rejects them with HTTP 413.
+        Re-encode only oversized payloads to a single-frame JPEG using the same
+        FFmpeg binary Stash already has configured.
+        """
+        if len(data) <= VISUAL_SEARCH_MAX_UPLOAD_BYTES:
+            return data
+
+        ffmpeg_path = self._ffmpeg_path()
+        attempts = (
+            (VISUAL_SEARCH_MAX_DIMENSION, 7),
+            (512, 9),
+            (384, 11),
+            (256, 13),
+        )
+        last_error = ""
+        smallest: Optional[bytes] = None
+
+        for max_dimension, quality in attempts:
+            cmd = [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                "pipe:0",
+                "-frames:v",
+                "1",
+                "-vf",
+                f"scale={max_dimension}:{max_dimension}:force_original_aspect_ratio=decrease",
+                "-q:v",
+                str(quality),
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=data,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                last_error = str(exc)
+                continue
+
+            output = bytes(proc.stdout or b"")
+            if proc.returncode != 0 or not output:
+                last_error = (proc.stderr or b"").decode(
+                    "utf-8", errors="replace"
+                ).strip()[:300]
+                continue
+
+            if smallest is None or len(output) < len(smallest):
+                smallest = output
+            if len(output) <= VISUAL_SEARCH_MAX_UPLOAD_BYTES:
+                return output
+
+        if smallest is not None and len(smallest) < len(data):
+            # Do not send a known-oversized payload to the provider. A still-large
+            # result is surfaced cleanly as retryable instead of provoking nginx 413.
+            raise RuntimeError(
+                "Stash visual-search image remained too large after FFmpeg resize "
+                f"({len(smallest)} bytes; limit {VISUAL_SEARCH_MAX_UPLOAD_BYTES})"
+            )
+
+        detail = f": {last_error}" if last_error else ""
+        raise RuntimeError(
+            "Stash thumbnail fell back to an oversized source image and could not "
+            f"be resized for visual search{detail}"
+        )
+
+    def image_bytes(self, image_id: str) -> bytes:
+        """Read a bounded Stash thumbnail for reverse-image search.
+
+        Stash normally serves a 640px thumbnail. If Stash falls back to the
+        original file for an unsupported thumbnail format, oversized data is
+        converted in memory to a single-frame JPEG before any provider upload.
         No duplicate source image is written by this plugin.
         """
         headers = {k: v for k, v in self.headers.items() if k.lower() != "content-type"}
@@ -95,12 +197,13 @@ class Stash:
         )
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
-                return resp.read()
+                data = resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(
                 f"Stash thumbnail HTTP {exc.code}: {detail[:300]}"
             ) from exc
+        return self._bounded_visual_search_bytes(data)
 
     def settings(self) -> Dict[str, Any]:
         data = self.gql("query PluginConfig { configuration { plugins } }")
