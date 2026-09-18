@@ -37,7 +37,7 @@ jobs:
           grep -Fq '_review_candidate_storage_url' plugins/DanbooruTagImporter/DanbooruTagImporter.py
           grep -Fq 'Not recorded' README.md
           grep -Fq 'Not recorded' plugins/DanbooruTagImporter/README.md
-          grep -Fiq 'review confidence' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
+          grep -Fq 'persisted SauceNAO confidence percentage' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
           git diff --check
           chmod +x build_site.sh
           ./build_site.sh
