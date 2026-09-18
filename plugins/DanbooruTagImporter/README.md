@@ -1,10 +1,10 @@
-# Booru Importer v3.26.9
+# Booru Importer v3.26.10
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.9 keeps the Deep Match throughput improvements from v3.26.4 and changes e621 IQDB failure scope. A 429, Cloudflare challenge, timeout, or other transient e621 IQDB failure affects only the current image; the next image starts with e621 IQDB eligible again. The e621 host circuit is cleared per IQDB image while request pacing is preserved, so one bad request cannot disqualify the rest of a long queue. Repeated identical provider warnings are de-duplicated. Match thresholds and artist mapping behavior are unchanged.
+v3.26.10 keeps the Deep Match throughput improvements from v3.26.4 and changes e621 IQDB failure scope. A 429, Cloudflare challenge, timeout, or other transient e621 IQDB failure affects only the current image; the next image starts with e621 IQDB eligible again. The e621 host circuit is cleared per IQDB image while request pacing is preserved, so one bad request cannot disqualify the rest of a long queue. Repeated identical provider warnings are de-duplicated. Match thresholds and artist mapping behavior are unchanged.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -16,7 +16,7 @@ v3.26.9 keeps the Deep Match throughput improvements from v3.26.4 and changes e6
 
 ## Requirements
 
-- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during development, and the v3.26.9 release workflow runs the full automated regression suite before packaging the public release.
+- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during development, and the v3.26.10 release workflow runs the full automated regression suite before packaging the public release.
 - Python available as `python` in the environment where Stash launches plugins.
 - No pip packages are required; the plugin uses only Python's standard library.
 
@@ -59,7 +59,7 @@ Optional safety preview of the next ten Unresolved images. It performs the same 
 
 Processes only images carrying `Multi-Booru Unresolved`.
 
-For images already marked `Multi-Booru Unresolved` by the normal Fast Scan, v3.26.9 reuses that completed fast-stage result instead of repeating exact MD5 and local pHash lookups. Forced rechecks such as Review and No-Match retries still reevaluate the full lookup path.
+For images already marked `Multi-Booru Unresolved` by the normal Fast Scan, v3.26.10 reuses that completed fast-stage result instead of repeating exact MD5 and local pHash lookups. Forced rechecks such as Review and No-Match retries still reevaluate the full lookup path.
 
 Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and SauceNAO (when configured) are launched concurrently:
 
@@ -69,7 +69,7 @@ Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and 
 Results:
 
 - accepted match -> `Multi-Booru Imported`
-- SauceNAO supported candidate at 90–94.99% -> `Multi-Booru Review`
+- SauceNAO supported candidate at 85–94.99% -> `Multi-Booru Review`
 - authoritative miss across all active stages -> `Multi-Booru No Match`
 - temporary/provider failure -> current state is retained for a later retry
 
@@ -101,7 +101,7 @@ State transitions remove the old plugin status marker without removing ordinary 
 - Danbooru IQDB minimum: 95%
 - e621 IQDB minimum: 90%
 - SauceNAO HIGH: >=95%
-- SauceNAO REVIEW: 90–94.99%
+- SauceNAO REVIEW: 85–94.99%
 - SauceNAO REVIEW auto-accept: off
 - SauceNAO polling: adaptive to the account-reported `short_limit` (roughly a 30-second quota window); optional user ceiling via **SauceNAO searches per 30 seconds**
 - SauceNAO long-term quota: account-reported `long_limit` / `long_remaining` is tracked so exhausted accounts do not produce false No Match results
