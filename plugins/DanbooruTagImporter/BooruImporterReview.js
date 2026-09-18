@@ -172,7 +172,7 @@
     );
   }
 
-  PluginApi.patch.after("ImageDetailPanel", function (props, rendered) {
+  PluginApi.patch.after("ImageDetailPanel", function (props, _context, rendered) {
     const image = props && props.image;
     if (!image) {
       return rendered;
