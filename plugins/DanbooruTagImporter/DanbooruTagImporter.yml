@@ -1,6 +1,6 @@
 name: Booru Importer
 description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, and e621. Fast Scan handles exact matches; Deep Match uses bandwidth-efficient, provider-aware visual search with rate-aware e621 IQDB retries.
-version: 3.26.14
+version: 3.26.15
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=3s, anonymous uploads at >=65s, with adaptive post-429 backoff.
 # SauceNAO review policy: >=94.0% auto-import; 85.0-93.9% Review. Similarity is normalized to one decimal before threshold comparison so any score displayed as 94.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page. The Review panel also displays the persisted SauceNAO confidence percentage; legacy Review items show Not recorded until rechecked.
