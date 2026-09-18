@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from entity_matching import find_entity_match, unique_entities
+from entity_matching import find_entity_match, normalized_entity_name, unique_entities
 from lookup_state import LookupOutcome, LookupStatus, can_mark_no_match
 from matching import PHashIndex
 from network import HTTP, is_retryable_exception
@@ -1642,6 +1642,52 @@ def ensure_performer(
         update_aliases_fn=stash.update_performer_aliases,
         reload_fn=stash.all_performers,
     )
+
+
+def _normalized_performer_names(performer: Dict[str, Any]) -> set[str]:
+    """Return normalized primary/alias names for one Stash performer."""
+    values = [str(performer.get("name") or "")]
+    values.extend(str(alias or "") for alias in (performer.get("alias_list") or []))
+    return {
+        normalized_entity_name(value)
+        for value in values
+        if normalized_entity_name(value)
+    }
+
+
+def _equivalent_attached_performer_ids(
+    image: Dict[str, Any],
+    performer_cache: Dict[str, Dict[str, Any]],
+    incoming_name: str,
+    canonical: Dict[str, Any],
+) -> set[str]:
+    """Find stale duplicate performer attachments that should yield to canonical.
+
+    This is intentionally conservative: an attached performer is replaced only when
+    the current source name normalizes exactly to both the canonical performer and
+    that attached performer. Fuzzy similarity alone never removes an attachment.
+    """
+    canonical_id = str(canonical.get("id") or "")
+    incoming_norm = normalized_entity_name(incoming_name)
+    if not canonical_id or not incoming_norm:
+        return set()
+    if incoming_norm not in _normalized_performer_names(canonical):
+        return set()
+
+    by_id = {
+        str(obj.get("id")): obj
+        for obj in unique_entities(performer_cache)
+        if obj.get("id") is not None
+    }
+    duplicates: set[str] = set()
+    for attached in image.get("performers") or []:
+        attached_id = str(attached.get("id") or "")
+        if not attached_id or attached_id == canonical_id:
+            continue
+        candidate = by_id.get(attached_id) or attached
+        if incoming_norm in _normalized_performer_names(candidate):
+            duplicates.add(attached_id)
+    return duplicates
 
 def tag_names(post: Dict[str, Any], source: str, include_meta: bool, prefixes: bool = False) -> List[str]:
     """Extract tag names from supported source post metadata."""
@@ -3278,7 +3324,19 @@ def process_image(
             similarity_margin=entity_similarity_margin,
         )
         if performer_obj:
-            performer_ids_to_attach.add(str(performer_obj["id"]))
+            canonical_id = str(performer_obj["id"])
+            duplicate_ids = _equivalent_attached_performer_ids(
+                image, performer_cache, performer_name, performer_obj
+            )
+            if duplicate_ids:
+                performer_ids_to_attach.difference_update(duplicate_ids)
+                log(
+                    "INFO",
+                    f"Image {iid}: replaced duplicate performer attachment(s) "
+                    f"{', '.join(sorted(duplicate_ids))} with canonical performer "
+                    f"'{performer_obj.get('name')}' ({canonical_id})",
+                )
+            performer_ids_to_attach.add(canonical_id)
 
     ensured_studios: List[Dict[str, Any]] = []
     for artist in studio_targets:
