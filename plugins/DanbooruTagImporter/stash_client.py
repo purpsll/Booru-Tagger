@@ -224,6 +224,7 @@ class Stash:
             images {
               id
               title
+              photographer
               tags { id name }
               studio { id name }
               performers { id name }
@@ -266,6 +267,7 @@ class Stash:
           findImage(id: $id) {
             id
             title
+            photographer
             tags { id name }
             studio { id name }
             performers { id name }
@@ -467,6 +469,8 @@ class Stash:
         performer_ids: Optional[List[str]] = None,
         date: Optional[str] = None,
         urls: Optional[List[str]] = None,
+        title: Optional[str] = None,
+        photographer: Optional[str] = None,
     ) -> None:
         q = """
         mutation UpdateImage($input: ImageUpdateInput!) {
@@ -482,4 +486,8 @@ class Stash:
             input_obj["date"] = str(date)
         if urls is not None:
             input_obj["urls"] = [str(u) for u in urls]
+        if title is not None:
+            input_obj["title"] = str(title)
+        if photographer is not None:
+            input_obj["photographer"] = str(photographer)
         self.gql(q, {"input": input_obj})
