@@ -120,7 +120,7 @@ This is slower, but it can find images that have been resized, recompressed, cro
 
 Booru Importer only accepts strong matches automatically. Less-certain SauceNAO matches from 85–94.99% are placed into a **Review** state instead of being treated as definite. On the individual Stash image page, Booru Importer shows the proposed source URL with **Yes** and **No** controls.
 
-In **v3.26.10**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues without lowering the existing confidence thresholds.
+In **v3.26.10**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues while keeping automatic SauceNAO imports at 95%+; the Review floor is 85% so lower-confidence candidates require an explicit Yes/No decision.
 
 ---
 
