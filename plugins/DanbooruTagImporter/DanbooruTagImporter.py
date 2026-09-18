@@ -1930,7 +1930,7 @@ def ensure_tags(
         try:
             created = stash.create_tag(name)
         except RuntimeError as exc:
-            if "already" in str(exc).lower() or "unique" in str(exc).lower():
+            if any(token in str(exc).lower() for token in ("already", "unique", "used as alias")):
                 cache.clear()
                 cache.update(stash.all_tags())
                 rebuilt_index = build_normalized_tag_index(cache)
@@ -1976,7 +1976,7 @@ def ensure_marker_tag(
     try:
         created = stash.create_tag(marker_name)
     except RuntimeError as exc:
-        if "already" not in str(exc).lower() and "unique" not in str(exc).lower():
+        if not any(token in str(exc).lower() for token in ("already", "unique", "used as alias")):
             raise
         tag_cache.clear()
         tag_cache.update(stash.all_tags())
