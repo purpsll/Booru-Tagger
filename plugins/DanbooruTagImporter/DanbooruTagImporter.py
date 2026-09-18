@@ -3325,8 +3325,14 @@ def review_candidate_action(
         for url in (image.get("urls") or [])
         if str(url).strip()
     ]
-    if candidate_url.casefold() not in {url.casefold() for url in current_urls}:
-        raise RuntimeError("The proposed Review candidate URL is no longer attached to this image")
+    supported_review_urls = [
+        url for url in current_urls if _is_supported_booru_url(url)
+    ]
+    if not supported_review_urls:
+        raise RuntimeError("This Review image no longer has a supported booru candidate URL")
+    expected_candidate_url = supported_review_urls[-1]
+    if candidate_url.casefold() != expected_candidate_url.casefold():
+        raise RuntimeError("The proposed Review candidate URL is no longer the active candidate for this image")
 
     configure_network(settings, reset=True)
     tag_cache = stash.all_tags()
