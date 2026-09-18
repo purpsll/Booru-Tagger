@@ -28,7 +28,11 @@
       }
     `;
 
-    const response = await fetch("/graphql", {
+    const baseHref = document.querySelector("base")?.getAttribute("href") || "/";
+    const platformBase = new URL(baseHref, window.location.origin);
+    const graphqlUrl = new URL("graphql", platformBase).toString();
+
+    const response = await fetch(graphqlUrl, {
       method: "POST",
       credentials: "same-origin",
       headers: {
