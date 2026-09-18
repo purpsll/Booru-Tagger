@@ -152,6 +152,89 @@ class PerformerAttachmentTests(unittest.TestCase):
         final_ids.add(str(canonical["id"]))
         self.assertEqual(final_ids, {"10", "30"})
 
+    def test_recovery_mode_reuses_alias_canonical_without_creating(self):
+        canonical = {
+            "id": "42",
+            "name": "Cindy the Marten",
+            "alias_list": ["cindy_the_marten"],
+        }
+        unrelated = {
+            "id": "30",
+            "name": "Another Character",
+            "alias_list": [],
+        }
+        cache = {
+            "cindy the marten": canonical,
+            "cindy_the_marten": canonical,
+            "another character": unrelated,
+        }
+        image = {
+            "id": "5597",
+            "performers": [{"id": "30", "name": "Another Character"}],
+        }
+
+        class FakeStash:
+            def create_performer(self, name):
+                raise AssertionError("recovery must never create a replacement performer")
+
+            def update_performer_aliases(self, performer_id, aliases):
+                raise AssertionError("exact alias reuse should not update aliases")
+
+            def all_performers(self):
+                return cache
+
+        ids = plugin._resolve_performer_ids_for_image(
+            FakeStash(),
+            image,
+            ["cindy_the_marten"],
+            cache,
+            merge_normalized=True,
+            merge_similar=True,
+            similarity_threshold=0.98,
+            similarity_margin=0.03,
+            allow_create=False,
+        )
+
+        self.assertEqual(ids, {"30", "42"})
+
+    def test_recovery_mode_skips_vanished_performer_instead_of_recreating(self):
+        image = {"id": "5597", "performers": []}
+        cache = {}
+
+        class FakeStash:
+            def create_performer(self, name):
+                raise AssertionError("recovery must not recreate a vanished stale performer")
+
+            def update_performer_aliases(self, performer_id, aliases):
+                raise AssertionError("no performer should be updated")
+
+        ids = plugin._resolve_performer_ids_for_image(
+            FakeStash(),
+            image,
+            ["stale_name"],
+            cache,
+            merge_normalized=True,
+            merge_similar=True,
+            similarity_threshold=0.98,
+            similarity_margin=0.03,
+            allow_create=False,
+        )
+
+        self.assertEqual(ids, set())
+
+    def test_detects_only_performer_image_foreign_key_failure(self):
+        matching = RuntimeError(
+            "Stash GraphQL error: [{'message': 'error executing "
+            "INSERT INTO performers_images (image_id, performer_id) VALUES (?, ?) "
+            "[[5597 297]]: FOREIGN KEY constraint failed', 'path': ['imageUpdate']}]"
+        )
+        unrelated = RuntimeError(
+            "Stash GraphQL error: FOREIGN KEY constraint failed in another table"
+        )
+
+        self.assertTrue(plugin._is_performer_fk_failure(matching))
+        self.assertFalse(plugin._is_performer_fk_failure(unrelated))
+
     def test_fuzzy_only_similarity_never_removes_existing_attachment(self):
         canonical = {
             "id": "10",
