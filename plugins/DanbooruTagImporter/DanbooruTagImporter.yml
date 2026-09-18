@@ -8,6 +8,10 @@ exec:
   - python
   - "{pluginDir}/DanbooruTagImporter.py"
 
+ui:
+  javascript:
+    - BooruImporterReview.js
+
 interface: raw
 errLog: info
 
