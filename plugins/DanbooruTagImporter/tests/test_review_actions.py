@@ -315,7 +315,10 @@ class ReviewDecisionTests(unittest.TestCase):
         self.assertIn('choose("no")', ui)
         self.assertIn("Yes — import this source", ui)
         self.assertIn("No — mark No Match", ui)
-        self.assertIn("Review confidence: ", ui)\n        self.assertIn("85–94.99%", ui)\n        self.assertIn("Not recorded — recheck this Review candidate to populate it.", ui)\n        self.assertIn("runPluginOperation", ui)
+        self.assertIn("Review confidence: ", ui)
+        self.assertIn("85–94.99%", ui)
+        self.assertIn("Not recorded — recheck this Review candidate to populate it.", ui)
+        self.assertIn("runPluginOperation", ui)
 
 
 if __name__ == "__main__":
