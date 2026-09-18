@@ -75,5 +75,53 @@ class SauceNaoResilienceTests(unittest.TestCase):
         self.assertEqual(plugin._SAUCENAO_OUTAGE_STREAK, 0)
 
 
+    def test_http_500_html_body_is_clean_and_next_image_retries(self):
+        html = (
+            b'<!DOCTYPE html><html><head><meta http-equiv="Content-Type" '
+            b'content="text/html; charset=utf-8"></head><body>server error</body></html>'
+        )
+        first_error = urllib.error.HTTPError(
+            plugin.SAUCENAO_BASE,
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(html),
+        )
+        payload = (
+            b'{"header":{"status":0,"short_limit":10,"short_remaining":9,'
+            b'"long_limit":200,"long_remaining":199},"results":[]}'
+        )
+        logs = []
+        with mock.patch.object(plugin, "_saucenao_wait_for_slot", return_value=0.0), \
+             mock.patch.object(
+                 plugin,
+                 "log",
+                 side_effect=lambda level, message: logs.append((level, message)),
+             ), \
+             mock.patch.object(
+                 plugin.HTTP,
+                 "urlopen",
+                 side_effect=[first_error, FakeResponse(payload)],
+             ) as urlopen:
+            with self.assertRaises(RuntimeError) as raised:
+                plugin.saucenao_resolve(
+                    b"image", "key", 95.0, "", "", "", "", "", ""
+                )
+            self.assertIn("HTTP 500", str(raised.exception))
+            self.assertNotIn("<html", str(raised.exception).casefold())
+            self.assertFalse(plugin._saucenao_is_disabled())
+
+            result = plugin.saucenao_resolve(
+                b"image2", "key", 95.0, "", "", "", "", "", ""
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(plugin._SAUCENAO_OUTAGE_HITS, 1)
+        rendered_logs = "\n".join(message for _level, message in logs)
+        self.assertNotIn("<html", rendered_logs.casefold())
+        self.assertIn("SauceNAO HTTP 500", rendered_logs)
+
+
 if __name__ == "__main__":
     unittest.main()
