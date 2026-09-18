@@ -120,7 +120,7 @@ This is slower, but it can find images that have been resized, recompressed, cro
 
 Booru Importer only accepts strong matches automatically. Less-certain matches can be placed into a **Review** state instead of being treated as definite.
 
-In **v3.26.8**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues without lowering the existing confidence thresholds.
+In **v3.26.9**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues without lowering the existing confidence thresholds.
 
 ---
 
@@ -224,7 +224,7 @@ Booru Importer includes request pacing, retries, and temporary cooldowns to redu
 
 In that situation, you normally do not need to reinstall the plugin. Let the provider's limit recover and run the appropriate task again later.
 
-Temporary network/provider failures are designed not to become permanent "No Match" decisions. For e621 IQDB specifically, a 429 or Cloudflare challenge leaves that image eligible for retry but does not disable e621 IQDB for later images in the same queue. Authenticated IQDB file uploads are paced at least 3 seconds apart, anonymous uploads at least 65 seconds apart, and 429/Cloudflare responses add adaptive backoff for the next e621 attempt while still allowing the next image to retry. After a successful authenticated request, any extra e621 recovery delay decays gradually instead of snapping immediately back to the 3-second floor. SauceNAO HTTP 520–524 failures never disable the provider for later images: the next image still searches SauceNAO after a short adaptive 5–20 second wait, and repeated identical outage warnings are suppressed. Repeated identical e621 provider warnings are de-duplicated, while the per-image result remains visible in the normal log.
+Temporary network/provider failures are designed not to become permanent "No Match" decisions. For e621 IQDB specifically, a 429 or Cloudflare challenge leaves that image eligible for retry but does not disable e621 IQDB for later images in the same queue. Authenticated IQDB file uploads are paced at least 3 seconds apart, anonymous uploads at least 65 seconds apart, and 429/Cloudflare responses add adaptive backoff for the next e621 attempt while still allowing the next image to retry. After a successful authenticated request, any extra e621 recovery delay decays gradually instead of snapping immediately back to the 3-second floor. SauceNAO HTTP 500 and 520–524 failures never disable the provider for later images: the next image still searches SauceNAO after a short adaptive 5–20 second wait, and repeated identical outage warnings are suppressed. Repeated identical e621 provider warnings are de-duplicated, while the per-image result remains visible in the normal log.
 
 ---
 
