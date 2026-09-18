@@ -87,38 +87,38 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.12
+          ## Booru Importer v3.26.13
 
-          This release adds SauceNAO confidence visibility to the individual-image Review workflow.
+          This release fixes a SauceNAO confidence-boundary mismatch where a result displayed as 95.0% could still be sent to Review instead of being imported.
 
-          ### Review confidence display
+          ### Fixed: visible 95.0% now means HIGH
 
-          - Review candidates still use **95%+ for automatic import** and **85–94.99% for Review**.
-          - New or rechecked Review candidates persist the exact SauceNAO similarity that created the Review state.
-          - The individual image Review panel now displays that value directly, for example:
-            `Review confidence: 89.4% SauceNAO similarity (Review band: 85–94.99%)`.
-          - Review items created before v3.26.12 remain compatible and display **Not recorded — recheck this Review candidate to populate it** until they are rechecked.
+          SauceNAO similarity is now normalized to the same one-decimal value shown in plugin logs and the Review UI before confidence thresholds are applied.
 
-          ### Metadata and URL safety
+          - A raw score such as **94.96** is displayed as **95.0%** and is now treated as **HIGH**, so it imports automatically.
+          - A raw score such as **94.94** is displayed as **94.9%** and remains in the Review band.
+          - The Review floor still starts at displayed **85.0%**.
+          - The automatic-import threshold remains displayed **95.0%+**.
 
-          - The confidence value is stored only while the image is in Review using an internal URL fragment tied to the active candidate.
-          - The Review panel hides that internal fragment and shows/opens the clean canonical booru URL.
-          - **Yes — import this source** removes the internal confidence marker and leaves only the canonical source URL while importing all provider metadata through the normal path.
-          - **No — mark No Match** removes the stored Review candidate, including its confidence marker, and writes `Multi-Booru No Match`.
-          - No extra confidence tags are created and image details/notes are not modified.
+          This removes cases like:
 
-          ### Existing Review workflow retained
+          `SauceNAO: supported review candidate 95.0% not auto-accepted (HIGH starts at 95.0%)`
 
-          - The v3.26.11 React `ImageDetailPanel` callback fix remains in place.
-          - The backend still validates that the chosen URL is the current active Review candidate.
-          - Existing metadata-preservation rules, source-site resolution, artist/Studio mapping, character/Performer mapping, date handling, and Retry Later behavior are unchanged.
+          The score shown to the user and the score used by the importer now follow the same rule.
+
+          ### Existing behavior retained
+
+          - SauceNAO 85.0–94.9% remains `Multi-Booru Review`.
+          - Review confidence display and Yes/No image-page controls from v3.26.12 remain unchanged.
+          - e621 pacing, SauceNAO outage handling, Retry Later safeguards, source metadata import, artist/Studio mapping, and character/Performer mapping are unchanged.
+          - Stable internal package ID remains `DanbooruTagImporter`.
 
           ### Validation
 
-          - Full regression suite passes with **98 tests**.
-          - Python compilation and JavaScript syntax validation pass.
-          - Tests verify confidence persistence, legacy Review compatibility, clean canonical URL restoration after Yes, and the confidence UI text.
-          - The generated Stash package is verified to contain the updated Review JavaScript and stable `DanbooruTagImporter` package identity.
+          - Full regression suite passes with **101 tests**.
+          - Added direct coverage for raw 94.96 → displayed 95.0 → auto-import.
+          - Added direct coverage for raw 94.94 → displayed 94.9 → Review.
+          - Python compilation, JavaScript syntax, generated Stash feed, and release ZIP checks all pass.
 
           ### Update
 
@@ -126,13 +126,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based installs should show **Booru Importer 3.26.12** under **Installed Plugins → Update**.
-
-          After updating, a browser hard refresh may be useful because this release changes plugin JavaScript.
+          Existing source-based installs should show **Booru Importer 3.26.13** under **Installed Plugins → Update**.
 
           ### Manual installation
 
-          Download **`Booru-Importer-v3.26.12.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.13.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
 
           EOF
 
