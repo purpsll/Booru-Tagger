@@ -58,11 +58,7 @@ class TagAliasTests(unittest.TestCase):
         ids = plugin.resolve_existing_tag_ids(
             cache,
             ["old_merged_tag"],
-            merge_similar=True,
-            similarity_threshold=0.50,
-            similarity_margin=0.0,
             normalized_index=normalized,
-            similarity_buckets=buckets,
             image_id="3419",
         )
 
@@ -81,11 +77,7 @@ class TagAliasTests(unittest.TestCase):
         ids = plugin.resolve_existing_tag_ids(
             cache,
             ["alexandra_ston"],
-            merge_similar=True,
-            similarity_threshold=0.50,
-            similarity_margin=0.0,
             normalized_index=normalized,
-            similarity_buckets=buckets,
             image_id="3419",
         )
 
@@ -172,11 +164,7 @@ class TagAliasTests(unittest.TestCase):
         ids = plugin.resolve_existing_tag_ids(
             cache,
             ["old_merged_tag"],
-            merge_similar=True,
-            similarity_threshold=0.96,
-            similarity_margin=0.02,
             normalized_index=normalized,
-            similarity_buckets=buckets,
             image_id="3419",
         )
 
@@ -186,11 +174,7 @@ class TagAliasTests(unittest.TestCase):
         ids = plugin.resolve_existing_tag_ids(
             {},
             ["deleted_tag"],
-            merge_similar=True,
-            similarity_threshold=0.96,
-            similarity_margin=0.02,
             normalized_index={},
-            similarity_buckets={},
             image_id="3419",
         )
 
