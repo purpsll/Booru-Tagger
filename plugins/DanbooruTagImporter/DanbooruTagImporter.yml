@@ -3,7 +3,7 @@ description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e6
 version: 3.26.20
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=3s, anonymous uploads at >=65s, with adaptive post-429 backoff.
-# SauceNAO review policy: >=94.0% auto-import; 85.0-93.9% Review. Similarity is normalized to one decimal before threshold comparison so any score displayed as 94.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page. The Review panel also displays the persisted SauceNAO confidence percentage; legacy Review items show Not recorded until rechecked.
+# SauceNAO review policy: >=94.0% auto-import; 85.0-93.9% supported-booru candidates enter Review. External-site results in that band remain pending unless the full source can be re-resolved with metadata fidelity. Similarity is normalized to one decimal before threshold comparison so any score displayed as 94.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page.
 # Yes resolves the exact proposed source and imports through the normal metadata path; No removes that candidate URL and writes Multi-Booru No Match.
 # Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp and third-party_edit are ignored as artist metadata.
 exec:
@@ -86,7 +86,7 @@ tasks:
       force_recheck: false
 
   - name: 3. Deep Match All Unresolved Images
-    description: Runs the slower reverse-image-search pass only on images queued as Unresolved. High-confidence matches become Imported, review-band matches become Review, and authoritative misses become No Match. Temporary provider failures stay Unresolved for a later retry.
+    description: Runs the slower reverse-image-search pass only on images queued as Unresolved. High-confidence matches become Imported, supported review-band matches become Review, external review-band hits remain pending, and authoritative misses become No Match. Temporary provider failures stay Unresolved for a later retry.
     defaultArgs:
       mode: import_all
       lookup_mode: deep
