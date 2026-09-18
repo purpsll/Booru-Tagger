@@ -60,7 +60,8 @@ from constants import (
     SAUCENAO_QUOTA_WINDOW_SECONDS,
     SAUCENAO_RATE_LIMIT_FALLBACK_SECONDS,
     SAUCENAO_REVIEW_MINIMUM, SIMILAR_TAG_MARGIN, SIMILAR_TAG_THRESHOLD,
-    STUDIO_SIMILARITY_THRESHOLD, USER_AGENT, VERBOSE_FAST_DECISION_LOGGING, VERSION,
+    STUDIO_SIMILARITY_THRESHOLD, USER_AGENT, VERBOSE_FAST_DECISION_LOGGING,
+    VERSION, VISUAL_SEARCH_MAX_UPLOAD_BYTES,
 )
 from stash_client import Stash
 
@@ -822,6 +823,16 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
     if not api_key or _saucenao_is_disabled():
         return None
 
+    if len(image_bytes) > VISUAL_SEARCH_MAX_UPLOAD_BYTES:
+        if diagnostics is not None:
+            diagnostics["upload_bytes"] = len(image_bytes)
+            diagnostics["upload_limit_bytes"] = VISUAL_SEARCH_MAX_UPLOAD_BYTES
+        raise RuntimeError(
+            "SauceNAO upload skipped locally because the Stash image payload "
+            f"is still too large ({len(image_bytes)} bytes; "
+            f"limit {VISUAL_SEARCH_MAX_UPLOAD_BYTES})"
+        )
+
     _saucenao_wait_for_slot(requests_per_30_seconds)
     fields = {"api_key": api_key, "output_type":"2", "numres":"8", "db":"999"}
     boundary = "----StashSauceNAOBoundary7MA4YWxkTrZu0gW"
@@ -831,7 +842,17 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
     chunks.append((f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"stash-image\"\r\nContent-Type: application/octet-stream\r\n\r\n").encode()+image_bytes+b"\r\n")
     chunks.append(f"--{boundary}--\r\n".encode())
     body=b"".join(chunks)
-    req=urllib.request.Request(SAUCENAO_BASE,data=body,method="POST",headers={"User-Agent":USER_AGENT,"Accept":"application/json","Content-Type":f"multipart/form-data; boundary={boundary}"})
+    req=urllib.request.Request(
+        SAUCENAO_BASE,
+        data=body,
+        method="POST",
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        },
+    )
     try:
         with HTTP.urlopen(
             req,
@@ -843,6 +864,11 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
             payload=json.loads(raw)
     except urllib.error.HTTPError as exc:
         detail=exc.read().decode("utf-8",errors="replace")
+        if exc.code == 413:
+            raise RuntimeError(
+                "SauceNAO rejected the visual-search upload as too large (HTTP 413); "
+                "the image will remain pending for a later retry"
+            ) from exc
         if exc.code in {500, 520, 521, 522, 523, 524}:
             _saucenao_note_outage(exc.code)
             raise RuntimeError(
