@@ -1405,7 +1405,10 @@ def artist_names(
     """
     values: List[str] = []
 
-    if source == "e621":
+    if source in {"konachan", "yandere", "saucenao_external"}:
+        values.extend(str(v or "").strip() for v in (post.get("_source_artists") or []))
+
+    elif source == "e621":
         groups = post.get("tags") or {}
         raw_values = groups.get("artist") if isinstance(groups, dict) else None
         if isinstance(raw_values, list):
@@ -1791,7 +1794,9 @@ def performer_names(
     rule34_user_id: str = "",
 ) -> List[str]:
     values: List[str] = []
-    if source == "e621":
+    if source in {"konachan", "yandere", "saucenao_external"}:
+        values.extend(str(v or "").strip() for v in (post.get("_source_characters") or []))
+    elif source == "e621":
         groups = post.get("tags") or {}
         raw_values = groups.get("character") if isinstance(groups, dict) else None
         if isinstance(raw_values, list):
@@ -2023,7 +2028,7 @@ def _is_tag_fk_failure(exc: BaseException) -> bool:
 
 def tag_names(post: Dict[str, Any], source: str, include_meta: bool, prefixes: bool = False) -> List[str]:
     """Extract tag names from supported source post metadata."""
-    if source in {"gelbooru", "rule34"}:
+    if source in {"gelbooru", "rule34", "konachan", "yandere"}:
         raw = str(post.get("tags") or "")
         result: List[str] = []
         seen = set()
@@ -2707,6 +2712,12 @@ def source_post_url(source: str, post: Dict[str, Any]) -> Optional[str]:
         return f"https://gelbooru.com/index.php?page=post&s=view&id={post_id}"
     if source == "rule34":
         return f"https://rule34.xxx/index.php?page=post&s=view&id={post_id}"
+    if source == "konachan":
+        return f"https://konachan.com/post/show/{post_id}"
+    if source == "yandere":
+        return f"https://yande.re/post/show/{post_id}"
+    if source == "saucenao_external":
+        return str(post.get("_source_url") or "").strip() or None
     return None
 
 
@@ -2741,6 +2752,10 @@ def normalize_source_date(value: Any) -> Optional[str]:
 
 
 def source_post_date(source: str, post: Dict[str, Any]) -> Optional[str]:
+    if source == "saucenao_external":
+        parsed = normalize_source_date(post.get("_source_date"))
+        if parsed:
+            return parsed
     # Only use fields that clearly represent source creation/posting dates.
     # Do not use generic change/update timestamps, which may reflect later edits.
     for value in (
@@ -3729,7 +3744,9 @@ def process_image(
         "gelbooru": "Gelbooru",
         "rule34": "Rule34",
         "e621": "e621",
-    }.get(source, source)
+        "konachan": "Konachan",
+        "yandere": "Yande.re",
+    }.get(source, str(post.get("_source_site") or source))
 
     if dry_run:
         new_names = [
