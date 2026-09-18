@@ -10,6 +10,7 @@
   const Alert = Bootstrap && Bootstrap.Alert;
   const REVIEW_TAG = "Multi-Booru Review";
   const PLUGIN_ID = "DanbooruTagImporter";
+  const REVIEW_CONFIDENCE_KEY = "booru-importer-review-confidence";
 
   function isSupportedBooruUrl(url) {
     const text = String(url || "").trim();
@@ -19,6 +20,28 @@
       /rule34\.xxx\/.*[?&]id=\d+/i.test(text) ||
       /e621\.net\/posts\/\d+/i.test(text)
     );
+  }
+
+  function parseReviewCandidate(url) {
+    const storedUrl = String(url || "").trim();
+    let displayUrl = storedUrl;
+    let confidence = null;
+    try {
+      const parsed = new URL(storedUrl, window.location.origin);
+      const fragment = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+      const raw = fragment.get(REVIEW_CONFIDENCE_KEY);
+      if (raw !== null && raw !== "") {
+        const score = Number(raw);
+        if (Number.isFinite(score)) {
+          confidence = Math.max(0, Math.min(100, score));
+        }
+        parsed.hash = "";
+        displayUrl = parsed.toString();
+      }
+    } catch (_) {
+      // Keep the original URL if parsing fails; the backend still validates it.
+    }
+    return { storedUrl, displayUrl, confidence };
   }
 
   async function submitDecision(imageId, candidateUrl, action) {
@@ -65,6 +88,8 @@
   function ReviewDecisionPanel(props) {
     const image = props.image;
     const candidateUrl = props.candidateUrl;
+    const displayUrl = props.displayUrl;
+    const confidence = props.confidence;
     const [busy, setBusy] = React.useState("");
     const [error, setError] = React.useState("");
 
@@ -155,15 +180,23 @@
         ),
         React.createElement(
           "p",
+          { className: "mb-2" },
+          React.createElement("strong", null, "Review confidence: "),
+          confidence === null
+            ? "Not recorded — recheck this Review candidate to populate it."
+            : confidence.toFixed(1) + "% SauceNAO similarity (Review band: 85–94.99%)"
+        ),
+        React.createElement(
+          "p",
           { className: "mb-3 text-break" },
           React.createElement(
             "a",
             {
-              href: candidateUrl,
+              href: displayUrl,
               target: "_blank",
               rel: "noopener noreferrer",
             },
-            candidateUrl
+            displayUrl
           )
         ),
         buttons,
@@ -190,7 +223,8 @@
       return rendered;
     }
 
-    const candidateUrl = supportedUrls[supportedUrls.length - 1];
+    const candidate = parseReviewCandidate(supportedUrls[supportedUrls.length - 1]);
+    const candidateUrl = candidate.storedUrl;
     return React.createElement(
       React.Fragment,
       null,
@@ -198,6 +232,8 @@
       React.createElement(ReviewDecisionPanel, {
         image: image,
         candidateUrl: candidateUrl,
+        displayUrl: candidate.displayUrl,
+        confidence: candidate.confidence,
       })
     );
   });
