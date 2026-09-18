@@ -2630,6 +2630,18 @@ def _visual_confidence(score: float, auto_threshold: float, review_threshold: fl
     return "LOW"
 
 
+def _saucenao_strong_unsupported_is_inconclusive(
+    best_similarity: float,
+    best_supported_similarity: float,
+    review_threshold: float,
+) -> bool:
+    """A strong SauceNAO hit outside supported boorus is not a definitive miss."""
+    best = _saucenao_policy_score(best_similarity)
+    supported = _saucenao_policy_score(best_supported_similarity)
+    review = _saucenao_policy_score(review_threshold)
+    return best >= review and supported < review
+
+
 def _saucenao_thresholds(settings: Dict[str, Any]) -> Tuple[float, float, bool]:
     # Fixed policy helper. Legacy Stash tuning values are ignored.
     high = max(0.0, min(100.0, float(SAUCENAO_HIGH_CONFIDENCE)))
@@ -3226,7 +3238,6 @@ def process_image(
 
         saucenao_outcome = visual_outcomes.get("saucenao")
         if saucenao_outcome is not None:
-            outcomes.append(saucenao_outcome)
             best_similarity = float(
                 saucenao_diag.get("best_similarity", 0.0) or 0.0
             )
@@ -3237,7 +3248,44 @@ def process_image(
             best_supported_url = str(
                 saucenao_diag.get("best_supported_url") or ""
             ).strip()
-            if saucenao_outcome.matched:
+
+            strong_unsupported = (
+                post is None
+                and saucenao_outcome.status == LookupStatus.MISS
+                and _saucenao_strong_unsupported_is_inconclusive(
+                    best_similarity,
+                    best_supported_similarity,
+                    saucenao_review_min,
+                )
+            )
+            if strong_unsupported:
+                # SauceNAO found a visually strong result, but it belongs to a
+                # source this importer cannot resolve into trusted booru metadata.
+                # That is inconclusive, not an authoritative miss, so keep the
+                # image pending instead of writing Multi-Booru No Match.
+                outcomes.append(
+                    LookupOutcome(
+                        "SauceNAO",
+                        "visual",
+                        LookupStatus.UNAVAILABLE,
+                        None,
+                        (
+                            "strong visual match from unsupported source "
+                            f"({best_similarity:.1f}%)"
+                        ),
+                    )
+                )
+                _metric(metrics, "saucenao_unsupported_results")
+                decision_details.append(
+                    f"SauceNAO: strong unsupported visual result "
+                    f"{best_similarity:.1f}%; keeping image pending"
+                )
+            else:
+                outcomes.append(saucenao_outcome)
+
+            if strong_unsupported:
+                pass
+            elif saucenao_outcome.matched:
                 sauce_source, sauce_post = saucenao_outcome.value
                 score = float(
                     sauce_post.get("_saucenao_score", best_similarity) or 0.0
