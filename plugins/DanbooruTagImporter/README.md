@@ -73,6 +73,15 @@ Results:
 - authoritative miss across all active stages -> `Multi-Booru No Match`
 - temporary/provider failure -> current state is retained for a later retry
 
+### Review candidates on an individual image
+
+When an image is tagged `Multi-Booru Review`, the individual Stash image page displays the proposed supported booru URL and two explicit decisions:
+
+- **Yes — import this source:** resolves that exact Danbooru, Gelbooru, Rule34, or e621 post and sends it through the same normal metadata path used by automatic matches. Source tags, artist/Studio mapping, character/Performer mapping, source date, and canonical source URL follow the normal preservation rules, then the image becomes `Multi-Booru Imported`.
+- **No — mark No Match:** removes the rejected candidate URL, replaces the Review workflow marker with `Multi-Booru No Match`, and does not import candidate metadata.
+
+The UI validates that the chosen URL is still the active Review candidate before either action is applied.
+
 ### 4. Recheck Review Candidates
 
 Rechecks only `Multi-Booru Review` images. A stronger result can become Imported; a review-band result stays Review; an authoritative miss becomes No Match; a temporary failure leaves the Review state unchanged.
