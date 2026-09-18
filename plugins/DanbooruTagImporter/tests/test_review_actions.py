@@ -239,6 +239,8 @@ class ReviewDecisionTests(unittest.TestCase):
 
         self.assertIn("BooruImporterReview.js", manifest)
         self.assertIn('PluginApi.patch.after("ImageDetailPanel"', ui)
+        self.assertIn('function (props, _context, rendered)', ui)
+        self.assertNotIn('function (props, rendered)', ui)
         self.assertIn('mode: "review_decision"', ui)
         self.assertIn('choose("yes")', ui)
         self.assertIn('choose("no")', ui)
