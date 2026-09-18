@@ -1,0 +1,47 @@
+name: Validate Review confidence 3.26.12
+
+on:
+  push:
+    branches:
+      - test/review-confidence-32612
+    paths:
+      - '.github/workflows/validate-review-confidence-32612.yml'
+      - 'README.md'
+      - 'plugins/DanbooruTagImporter/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compile source and check UI syntax
+        run: |
+          python -m py_compile plugins/DanbooruTagImporter/*.py
+          node --check plugins/DanbooruTagImporter/BooruImporterReview.js
+
+      - name: Run regression suite
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+
+      - name: Validate Review confidence and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -qx 'VERSION = "3.26.12"' plugins/DanbooruTagImporter/constants.py
+          grep -qx 'version: 3.26.12' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
+          grep -Fq 'Review confidence: ' plugins/DanbooruTagImporter/BooruImporterReview.js
+          grep -Fq 'booru-importer-review-confidence' plugins/DanbooruTagImporter/BooruImporterReview.js
+          grep -Fq '_review_candidate_storage_url' plugins/DanbooruTagImporter/DanbooruTagImporter.py
+          grep -Fq 'Not recorded' README.md
+          grep -Fq 'Not recorded' plugins/DanbooruTagImporter/README.md
+          grep -Fq 'review confidence' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
+          git diff --check
+          chmod +x build_site.sh
+          ./build_site.sh
+          grep -q 'id: DanbooruTagImporter' _site/index.yml
+          grep -q 'version: 3.26.12-' _site/index.yml
+          test -f _site/DanbooruTagImporter.zip
+          unzip -l _site/DanbooruTagImporter.zip | grep -q 'BooruImporterReview.js'
