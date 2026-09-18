@@ -1753,7 +1753,10 @@ def _resolve_performer_ids_for_image(
                 performer_name,
                 performer_cache,
                 merge_normalized=merge_normalized,
-                merge_similar=merge_similar,
+                # Recovery must never guess a replacement by fuzzy similarity.
+                # Exact aliases and unambiguous normalized matches are sufficient
+                # to follow a real Stash merge to its surviving canonical performer.
+                merge_similar=False,
                 similarity_threshold=similarity_threshold,
                 similarity_margin=similarity_margin,
             )
@@ -1974,10 +1977,12 @@ def normalized_tag_key(name: str) -> str:
 
 
 def build_normalized_tag_index(cache: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
-    """Index only unambiguous normalized tag names.
+    """Index only unambiguous normalized tag names and aliases.
 
     Two distinct existing tags can collapse to the same separator/case-normalized key. In
     that case neither is a safe automatic reuse target, so the key is deliberately omitted.
+    Including aliases ensures separator variants of an existing Stash alias still resolve
+    to the alias owner's canonical tag ID.
     """
     out: Dict[str, Dict[str, str]] = {}
     ambiguous: set[str] = set()
@@ -1987,15 +1992,18 @@ def build_normalized_tag_index(cache: Dict[str, Dict[str, str]]) -> Dict[str, Di
         if not tag_id or tag_id in seen_ids:
             continue
         seen_ids.add(tag_id)
-        key = normalized_tag_key(tag.get("name") or "")
-        if not key or key in ambiguous:
-            continue
-        existing = out.get(key)
-        if existing is not None and str(existing.get("id") or "") != tag_id:
-            out.pop(key, None)
-            ambiguous.add(key)
-            continue
-        out[key] = tag
+        values = [str(tag.get("name") or "")]
+        values.extend(str(alias or "") for alias in (tag.get("aliases") or []))
+        for value in values:
+            key = normalized_tag_key(value)
+            if not key or key in ambiguous:
+                continue
+            existing = out.get(key)
+            if existing is not None and str(existing.get("id") or "") != tag_id:
+                out.pop(key, None)
+                ambiguous.add(key)
+                continue
+            out[key] = tag
     return out
 
 
@@ -2141,11 +2149,7 @@ def resolve_existing_tag_ids(
     cache: Dict[str, Dict[str, str]],
     names: Iterable[str],
     *,
-    merge_similar: bool,
-    similarity_threshold: float,
-    similarity_margin: float,
     normalized_index: Dict[str, Dict[str, str]],
-    similarity_buckets: Dict[Tuple[str, int], List[Tuple[str, Dict[str, str]]]],
     image_id: str = "",
 ) -> List[str]:
     """Resolve current canonical tag IDs without creating replacement tags.
@@ -2161,15 +2165,11 @@ def resolve_existing_tag_ids(
         if not name:
             continue
         existing = cache.get(name.casefold())
-        if existing is None and merge_similar:
-            existing = find_similar_existing_tag(
-                name,
-                cache,
-                normalized_index,
-                similarity_threshold,
-                similarity_buckets,
-                similarity_margin,
-            )
+        if existing is None:
+            # Recovery intentionally does not fuzzy-match. A deleted tag must not
+            # silently become a merely similar tag. Only current names, aliases,
+            # or unambiguous separator/case-normalized equivalents are trusted.
+            existing = normalized_index.get(normalized_tag_key(name))
         if existing:
             tag_id = str(existing.get("id") or "")
             if tag_id and tag_id not in seen:
@@ -2322,6 +2322,103 @@ def _review_candidate_storage_url(url: str, confidence: Optional[float]) -> str:
     )
 
 
+def _refresh_tag_cache_state(
+    stash: Stash,
+    tag_cache: Dict[str, Dict[str, str]],
+    normalized_tag_index: Dict[str, Dict[str, str]],
+    similarity_buckets: Dict[Tuple[str, int], List[Tuple[str, Dict[str, str]]]],
+) -> None:
+    tag_cache.clear()
+    tag_cache.update(stash.all_tags())
+    normalized_tag_index.clear()
+    normalized_tag_index.update(build_normalized_tag_index(tag_cache))
+    similarity_buckets.clear()
+    similarity_buckets.update(build_similarity_buckets(normalized_tag_index))
+
+
+def _write_status_marker(
+    stash: Stash,
+    image: Dict[str, Any],
+    marker_name: str,
+    tag_cache: Dict[str, Dict[str, str]],
+    normalized_tag_index: Dict[str, Dict[str, str]],
+    similarity_buckets: Dict[Tuple[str, int], List[Tuple[str, Dict[str, str]]]],
+    *,
+    target_urls: Optional[List[str]] = None,
+) -> bool:
+    """Write a workflow marker with one stale-tag refresh/retry.
+
+    This is used by all tag-only status updates so merges/deletions that happen
+    after an image was read cannot leave an old tag ID in imageUpdate.
+    """
+    image_id = str(image.get("id") or "")
+    working_image = image
+    recovered = False
+
+    while True:
+        marker_id = ensure_marker_tag(
+            stash,
+            marker_name,
+            tag_cache,
+            normalized_tag_index,
+            similarity_buckets,
+        )
+        final_ids = list(
+            dict.fromkeys([*_non_status_tag_ids(working_image), marker_id])
+        )
+        current_ids = {
+            str(tag.get("id"))
+            for tag in (working_image.get("tags") or [])
+            if tag.get("id") is not None
+        }
+        changed = set(final_ids) != current_ids or target_urls is not None
+
+        if changed:
+            try:
+                stash.update_image_tags(
+                    image_id,
+                    final_ids,
+                    urls=target_urls,
+                )
+            except RuntimeError as exc:
+                if recovered or not _is_tag_fk_failure(exc):
+                    raise
+                fresh_image = stash.find_image(image_id)
+                if not fresh_image:
+                    raise
+                log(
+                    "WARNING",
+                    f"Image {image_id}: stale tag ID detected during status update; "
+                    "refreshing Stash tags and retrying with canonical IDs.",
+                )
+                _refresh_tag_cache_state(
+                    stash,
+                    tag_cache,
+                    normalized_tag_index,
+                    similarity_buckets,
+                )
+                working_image = fresh_image
+                recovered = True
+                continue
+
+        clean_tags = [
+            tag
+            for tag in (working_image.get("tags") or [])
+            if str(tag.get("name") or "").casefold() not in _status_marker_keys()
+        ]
+        marker_obj = tag_cache.get(marker_name.casefold()) or {
+            "id": marker_id,
+            "name": marker_name,
+        }
+        image["tags"] = [
+            *clean_tags,
+            {"id": str(marker_obj["id"]), "name": marker_obj["name"]},
+        ]
+        if target_urls is not None:
+            image["urls"] = list(target_urls)
+        return changed
+
+
 def transition_image_status(
     stash: Stash,
     image: Dict[str, Any],
@@ -2345,13 +2442,6 @@ def transition_image_status(
     if dry_run:
         return False
 
-    marker_id = ensure_marker_tag(
-        stash, marker_name, tag_cache, normalized_tag_index, similarity_buckets
-    )
-    base_ids = _non_status_tag_ids(image)
-    final_ids = list(dict.fromkeys([*base_ids, marker_id]))
-    current_ids = [str(tag["id"]) for tag in (image.get("tags") or [])]
-
     current_urls = [str(url).strip() for url in (image.get("urls") or []) if str(url).strip()]
     target_urls: Optional[List[str]] = None
     if extra_url:
@@ -2371,23 +2461,15 @@ def transition_image_status(
             if reordered_urls != current_urls:
                 target_urls = reordered_urls
 
-    changed = set(final_ids) != set(current_ids) or target_urls is not None
-    if changed:
-        stash.update_image_tags(
-            str(image["id"]),
-            final_ids,
-            urls=target_urls,
-        )
-
-    clean_tags = [
-        tag for tag in (image.get("tags") or [])
-        if str(tag.get("name") or "").casefold() not in _status_marker_keys()
-    ]
-    marker_obj = tag_cache.get(marker_name.casefold()) or {"id": marker_id, "name": marker_name}
-    image["tags"] = [*clean_tags, {"id": str(marker_obj["id"]), "name": marker_obj["name"]}]
-    if target_urls is not None:
-        image["urls"] = target_urls
-    return changed
+    return _write_status_marker(
+        stash,
+        image,
+        marker_name,
+        tag_cache,
+        normalized_tag_index,
+        similarity_buckets,
+        target_urls=target_urls,
+    )
 
 def build_imported_phash_index(images: List[Dict[str, Any]]) -> PHashIndex:
     pairs: List[Tuple[str, Dict[str, Any]]] = []
@@ -3602,24 +3684,17 @@ def process_image(
                     f"Image {iid}: stale tag ID detected during image update; "
                     "refreshing Stash tags and retrying with canonical IDs.",
                 )
-                tag_cache.clear()
-                tag_cache.update(stash.all_tags())
-
-                normalized_tag_index.clear()
-                normalized_tag_index.update(build_normalized_tag_index(tag_cache))
-                similarity_buckets.clear()
-                similarity_buckets.update(
-                    build_similarity_buckets(normalized_tag_index)
+                _refresh_tag_cache_state(
+                    stash,
+                    tag_cache,
+                    normalized_tag_index,
+                    similarity_buckets,
                 )
 
                 imported_ids = resolve_existing_tag_ids(
                     tag_cache,
                     names,
-                    merge_similar=merge_similar,
-                    similarity_threshold=similar_threshold,
-                    similarity_margin=tag_similarity_margin,
                     normalized_index=normalized_tag_index,
-                    similarity_buckets=similarity_buckets,
                     image_id=iid,
                 )
                 marker_id = ensure_import_marker_tag(
@@ -3739,18 +3814,18 @@ def review_candidate_action(
     similarity_buckets = build_similarity_buckets(normalized_index)
 
     if action == "no":
-        marker_id = ensure_no_match_marker_tag(
-            stash, tag_cache, normalized_index, similarity_buckets
-        )
-        final_tag_ids = list(dict.fromkeys([*_non_status_tag_ids(image), marker_id]))
         remaining_urls = [
             url for url in current_urls
             if url.casefold() != candidate_url.casefold()
         ]
-        stash.update_image_tags(
-            image_id,
-            final_tag_ids,
-            urls=remaining_urls,
+        _write_status_marker(
+            stash,
+            image,
+            NO_MATCH_MARKER_TAG,
+            tag_cache,
+            normalized_index,
+            similarity_buckets,
+            target_urls=remaining_urls,
         )
         log(
             "INFO",

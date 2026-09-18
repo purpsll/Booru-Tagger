@@ -197,6 +197,36 @@ class PerformerAttachmentTests(unittest.TestCase):
 
         self.assertEqual(ids, {"30", "42"})
 
+    def test_recovery_never_fuzzy_guesses_vanished_performer(self):
+        different = {
+            "id": "22",
+            "name": "Alexandra Stove",
+            "alias_list": [],
+        }
+        cache = {"alexandra stove": different}
+        image = {"id": "5597", "performers": []}
+
+        class FakeStash:
+            def create_performer(self, name):
+                raise AssertionError("recovery must not create a performer")
+
+            def update_performer_aliases(self, performer_id, aliases):
+                raise AssertionError("fuzzy-only recovery must not update aliases")
+
+        ids = plugin._resolve_performer_ids_for_image(
+            FakeStash(),
+            image,
+            ["Alexandra Ston"],
+            cache,
+            merge_normalized=True,
+            merge_similar=True,
+            similarity_threshold=0.50,
+            similarity_margin=0.0,
+            allow_create=False,
+        )
+
+        self.assertEqual(ids, set())
+
     def test_recovery_mode_skips_vanished_performer_instead_of_recreating(self):
         image = {"id": "5597", "performers": []}
         cache = {}

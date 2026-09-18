@@ -42,6 +42,112 @@ class TagAliasTests(unittest.TestCase):
         self.assertEqual(tags["big_penis"]["id"], "7")
         self.assertEqual(tags["big_penis"]["name"], "large_penis")
 
+    def test_normalized_alias_variant_resolves_to_canonical_tag(self):
+        canonical = {
+            "id": "7000",
+            "name": "canonical_tag",
+            "aliases": ["old-merged-tag"],
+        }
+        cache = {
+            "canonical_tag": canonical,
+            "old-merged-tag": canonical,
+        }
+        normalized = plugin.build_normalized_tag_index(cache)
+        buckets = plugin.build_similarity_buckets(normalized)
+
+        ids = plugin.resolve_existing_tag_ids(
+            cache,
+            ["old_merged_tag"],
+            normalized_index=normalized,
+            image_id="3419",
+        )
+
+        self.assertEqual(ids, ["7000"])
+
+    def test_recovery_never_fuzzy_guesses_deleted_tag(self):
+        existing = {
+            "id": "8000",
+            "name": "alexandra_stove",
+            "aliases": [],
+        }
+        cache = {"alexandra_stove": existing}
+        normalized = plugin.build_normalized_tag_index(cache)
+        buckets = plugin.build_similarity_buckets(normalized)
+
+        ids = plugin.resolve_existing_tag_ids(
+            cache,
+            ["alexandra_ston"],
+            normalized_index=normalized,
+            image_id="3419",
+        )
+
+        self.assertEqual(ids, [])
+
+    def test_status_marker_retries_with_fresh_canonical_tag_ids(self):
+        stale_marker = {"id": "900", "name": "Multi-Booru Unresolved", "aliases": []}
+        fresh_marker = {"id": "901", "name": "Multi-Booru Unresolved", "aliases": []}
+        fresh_user_tag = {"id": "7000", "name": "canonical_tag", "aliases": ["old_tag"]}
+
+        class FakeStash:
+            def __init__(self):
+                self.calls = []
+
+            def update_image_tags(self, image_id, tag_ids, **kwargs):
+                self.calls.append((str(image_id), list(tag_ids), kwargs))
+                if len(self.calls) == 1:
+                    raise RuntimeError(
+                        "Stash GraphQL error: error executing INSERT INTO images_tags "
+                        "(image_id, tag_id) VALUES (?, ?) [[3419 6558]]: "
+                        "FOREIGN KEY constraint failed path imageUpdate"
+                    )
+
+            def find_image(self, image_id):
+                return {
+                    "id": str(image_id),
+                    "tags": [{"id": "7000", "name": "canonical_tag"}],
+                    "urls": [],
+                }
+
+            def all_tags(self):
+                return {
+                    "canonical_tag": fresh_user_tag,
+                    "old_tag": fresh_user_tag,
+                    "multi-booru unresolved": fresh_marker,
+                }
+
+            def create_tag(self, name):
+                raise AssertionError("current marker already exists after refresh")
+
+        image = {
+            "id": "3419",
+            "tags": [{"id": "6558", "name": "old_tag"}],
+            "urls": [],
+        }
+        cache = {
+            "old_tag": {"id": "6558", "name": "old_tag", "aliases": []},
+            "multi-booru unresolved": stale_marker,
+        }
+        normalized = plugin.build_normalized_tag_index(cache)
+        buckets = plugin.build_similarity_buckets(normalized)
+        stash = FakeStash()
+
+        changed = plugin._write_status_marker(
+            stash,
+            image,
+            "Multi-Booru Unresolved",
+            cache,
+            normalized,
+            buckets,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(len(stash.calls), 2)
+        self.assertEqual(set(stash.calls[1][1]), {"7000", "901"})
+        self.assertEqual(
+            {tag["id"] for tag in image["tags"]},
+            {"7000", "901"},
+        )
+
     def test_recovery_resolves_merged_tag_alias_to_canonical_id(self):
         canonical = {
             "id": "7000",
@@ -58,11 +164,7 @@ class TagAliasTests(unittest.TestCase):
         ids = plugin.resolve_existing_tag_ids(
             cache,
             ["old_merged_tag"],
-            merge_similar=True,
-            similarity_threshold=0.96,
-            similarity_margin=0.02,
             normalized_index=normalized,
-            similarity_buckets=buckets,
             image_id="3419",
         )
 
@@ -72,11 +174,7 @@ class TagAliasTests(unittest.TestCase):
         ids = plugin.resolve_existing_tag_ids(
             {},
             ["deleted_tag"],
-            merge_similar=True,
-            similarity_threshold=0.96,
-            similarity_margin=0.02,
             normalized_index={},
-            similarity_buckets={},
             image_id="3419",
         )
 
