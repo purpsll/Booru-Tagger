@@ -3,6 +3,8 @@ import pathlib
 import sys
 import unittest
 
+from stash_client import Stash
+
 PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
@@ -16,6 +18,29 @@ spec.loader.exec_module(plugin)
 
 
 class PerformerAttachmentTests(unittest.TestCase):
+    def test_stash_performer_cache_indexes_alias_to_canonical(self):
+        stash = Stash({"Host": "localhost", "Port": 9999})
+
+        def fake_gql(query, variables=None):
+            return {
+                "findPerformers": {
+                    "count": 1,
+                    "performers": [
+                        {
+                            "id": "10",
+                            "name": "Cindy the Marten",
+                            "alias_list": ["cindy_the_marten"],
+                        }
+                    ],
+                }
+            }
+
+        stash.gql = fake_gql
+        performers = stash.all_performers()
+
+        self.assertEqual(performers["cindy_the_marten"]["id"], "10")
+        self.assertEqual(performers["cindy_the_marten"]["name"], "Cindy the Marten")
+
     def test_normalized_merge_returns_canonical_performer_and_alias(self):
         canonical = {"id": "10", "name": "Cindy the Marten", "alias_list": []}
         cache = {"cindy the marten": canonical}
