@@ -814,6 +814,131 @@ def _saucenao_supported_candidate_url(data: Dict[str, Any]) -> str:
     return ""
 
 
+def _saucenao_site_name(header: Dict[str, Any], data: Dict[str, Any]) -> str:
+    index_name = str(header.get("index_name") or "").strip()
+    match = re.match(r"Index #\d+:\s*(.+?)(?:\s+-\s+|$)", index_name)
+    if match:
+        return match.group(1).strip()
+    urls = data.get("ext_urls") or []
+    if isinstance(urls, str):
+        urls = [urls]
+    for url in urls:
+        host = (urllib.parse.urlparse(str(url)).hostname or "").lower()
+        if host:
+            return host.removeprefix("www.")
+    return "SauceNAO"
+
+
+def _saucenao_external_url(data: Dict[str, Any]) -> str:
+    urls = data.get("ext_urls") or []
+    if isinstance(urls, str):
+        urls = [urls]
+    for url in urls:
+        value = str(url or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    direct = str(data.get("url") or "").strip()
+    return direct if direct.startswith(("http://", "https://")) else ""
+
+
+def _saucenao_name_list(value: Any) -> List[str]:
+    values = value if isinstance(value, list) else [value]
+    result: List[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for part in re.split(r"\s*,\s*", str(raw or "")):
+            name = part.strip()
+            key = name.casefold()
+            if name and key not in seen and key not in {"unknown", "n/a"}:
+                seen.add(key)
+                result.append(name)
+    return result
+
+
+def _saucenao_external_post(
+    header: Dict[str, Any],
+    data: Dict[str, Any],
+    similarity: float,
+) -> Dict[str, Any]:
+    site = _saucenao_site_name(header, data)
+    source_url = _saucenao_external_url(data)
+    title = str(
+        data.get("title")
+        or data.get("eng_name")
+        or data.get("source")
+        or ""
+    ).strip()
+    artists: List[str] = []
+    seen_artists: set[str] = set()
+    for key in (
+        "creator", "author_name", "member_name", "artist",
+        "author", "twitter_user_handle",
+    ):
+        for name in _saucenao_name_list(data.get(key)):
+            folded = name.casefold()
+            if folded not in seen_artists:
+                seen_artists.add(folded)
+                artists.append(name)
+    source_id = next(
+        (
+            str(data.get(key))
+            for key in (
+                "pixiv_id", "tweet_id", "fa_id", "as_project", "konachan_id",
+                "yandere_id", "danbooru_id", "e621_id", "md_id", "da_id",
+                "pawoo_id", "fn_id", "member_id",
+            )
+            if data.get(key) not in (None, "")
+        ),
+        "",
+    )
+    return {
+        "id": source_id or source_url or f"saucenao-{header.get('index_id', '')}",
+        "_saucenao_score": similarity,
+        "_saucenao_external": True,
+        "_source_site": site,
+        "_source_url": source_url,
+        "_source_title": title,
+        "_source_artists": artists,
+        "_source_characters": _saucenao_name_list(data.get("characters")),
+        "_source_date": (
+            data.get("created_at")
+            or data.get("date")
+            or data.get("posted_at")
+            or ""
+        ),
+        "_saucenao_index_id": header.get("index_id"),
+        "_saucenao_index_name": header.get("index_name"),
+    }
+
+
+def moebooru_post_by_id(
+    base_url: str,
+    post_id: str,
+    source_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch authoritative tags/metadata from a Moebooru-compatible post API."""
+    params = urllib.parse.urlencode({"tags": f"id:{post_id}", "limit": "1"})
+    req = urllib.request.Request(
+        f"{base_url}/post.json?{params}",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+    )
+    try:
+        with HTTP.urlopen(req, timeout=30) as resp:
+            payload = _safe_json_response(resp.read(), source_name)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise RuntimeError(
+            f"{source_name} HTTP {exc.code} resolving SauceNAO result"
+        ) from exc
+    if not isinstance(payload, list):
+        raise RuntimeError(f"{source_name} returned an unexpected post response")
+    for post in payload:
+        if isinstance(post, dict) and str(post.get("id") or "") == str(post_id):
+            return dict(post)
+    return None
+
+
 def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float, danbooru_login: str, danbooru_api_key: str, gelbooru_api_key: str, gelbooru_user_id: str, rule34_api_key: str, rule34_user_id: str, e621_username: str = '', e621_api_key: str = '', requests_per_30_seconds: float = 0.0, diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Search SauceNAO with the existing Stash image, then resolve a supported booru post.
 
