@@ -184,7 +184,7 @@
           React.createElement("strong", null, "Review confidence: "),
           confidence === null
             ? "Not recorded — recheck this Review candidate to populate it."
-            : confidence.toFixed(1) + "% SauceNAO similarity (Review band: 85–94.99%)"
+            : confidence.toFixed(1) + "% SauceNAO similarity (Review band: 85.0–93.9%)"
         ),
         React.createElement(
           "p",
