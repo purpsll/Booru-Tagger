@@ -18,7 +18,7 @@ spec.loader.exec_module(plugin)
 
 
 CANDIDATE_URL = "https://danbooru.donmai.us/posts/12345"
-
+REVIEW_URL = CANDIDATE_URL + "#booru-importer-review-confidence=89.4"\n
 
 class ReviewFakeStash:
     def __init__(self, image):
@@ -202,6 +202,75 @@ class ReviewDecisionTests(unittest.TestCase):
                 },
             )
 
+    def test_review_transition_persists_saucenao_confidence_in_hidden_fragment(self):
+        image = review_image()
+        stash = ReviewFakeStash(image)
+        tag_cache = stash.all_tags()
+        normalized = plugin.build_normalized_tag_index(tag_cache)
+        buckets = plugin.build_similarity_buckets(normalized)
+
+        plugin.transition_image_status(
+            stash,
+            image,
+            plugin.REVIEW_MARKER_TAG,
+            tag_cache,
+            normalized,
+            buckets,
+            extra_url=CANDIDATE_URL,
+            review_confidence=89.4,
+        )
+
+        stored = stash.updated[-1]["urls"][-1]
+        self.assertEqual(stored, REVIEW_URL)
+        canonical, score = plugin._review_candidate_parts(stored)
+        self.assertEqual(canonical, CANDIDATE_URL)
+        self.assertEqual(score, 89.4)
+
+    def test_yes_cleans_internal_confidence_fragment_and_keeps_canonical_source(self):
+        image = review_image()
+        image["urls"][-1] = REVIEW_URL
+        stash = ReviewFakeStash(image)
+        post = {
+            "id": 12345,
+            "tag_string_general": "blue_hair",
+            "tag_string_artist": "",
+            "tag_string_character": "",
+            "tag_string_copyright": "",
+            "tag_string_meta": "",
+            "created_at": "2025-01-02T03:04:05Z",
+        }
+
+        with mock.patch.object(
+            plugin,
+            "_resolve_supported_booru_url",
+            return_value=("danbooru", post),
+        ), mock.patch.object(
+            plugin,
+            "ensure_tags",
+            return_value=["source-tag"],
+        ):
+            result = plugin.review_candidate_action(
+                stash,
+                {},
+                {
+                    "action": "yes",
+                    "image_id": "42",
+                    "candidate_url": REVIEW_URL,
+                },
+            )
+
+        self.assertEqual(result["review_confidence"], 89.4)
+        self.assertEqual(result["candidate_url"], CANDIDATE_URL)
+        self.assertEqual(stash.updated[-1]["urls"], [
+            "https://example.com/user-url",
+            CANDIDATE_URL,
+        ])
+
+    def test_legacy_review_candidate_without_confidence_remains_supported(self):
+        canonical, score = plugin._review_candidate_parts(CANDIDATE_URL)
+        self.assertEqual(canonical, CANDIDATE_URL)
+        self.assertIsNone(score)
+
     def test_review_transition_keeps_active_candidate_url_last(self):
         image = review_image()
         image["urls"] = [
@@ -246,7 +315,7 @@ class ReviewDecisionTests(unittest.TestCase):
         self.assertIn('choose("no")', ui)
         self.assertIn("Yes — import this source", ui)
         self.assertIn("No — mark No Match", ui)
-        self.assertIn("runPluginOperation", ui)
+        self.assertIn("Review confidence: ", ui)\n        self.assertIn("85–94.99%", ui)\n        self.assertIn("Not recorded — recheck this Review candidate to populate it.", ui)\n        self.assertIn("runPluginOperation", ui)
 
 
 if __name__ == "__main__":
