@@ -118,9 +118,9 @@ For images that Fast Scan cannot identify, **Deep Match** can use reverse-image-
 
 This is slower, but it can find images that have been resized, recompressed, cropped, or otherwise changed from the version stored on the original booru.
 
-Booru Importer only accepts strong matches automatically. Less-certain matches can be placed into a **Review** state instead of being treated as definite.
+Booru Importer only accepts strong matches automatically. Less-certain SauceNAO matches from 85–94.99% can be placed into a **Review** state instead of being treated as definite.
 
-In **v3.26.9**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues without lowering the existing confidence thresholds.
+In **v3.26.10**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues without lowering the existing confidence thresholds.
 
 ---
 
