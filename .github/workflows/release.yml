@@ -87,52 +87,43 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.10
+          ## Booru Importer v3.26.11
 
-          This release expands the SauceNAO Review workflow while keeping automatic imports conservative.
+          This patch fixes the React crash introduced by the individual-image Review controls in v3.26.10.
 
-          ### SauceNAO confidence policy
+          ### Fixed
 
-          - **Automatic import remains 95%+.**
-          - **Review now starts at 85%.** Supported SauceNAO candidates from 85–94.99% are marked `Multi-Booru Review` rather than discarded.
-          - Results below 85% remain non-qualifying.
-          - The lower Review floor does not auto-import lower-confidence matches.
+          - Corrected the Stash `ImageDetailPanel` `patch.after` callback signature from two arguments to three:
+            `(props, _context, rendered)`.
+          - React passes an empty context object as the second original argument. v3.26.10 mistakenly treated that `{}` object as the rendered component, causing minified React error #31 when opening an image page.
+          - The Review panel now receives and renders the actual third `rendered` argument.
 
-          ### Individual image Review controls
+          ### Review workflow retained
 
-          Review images now show the proposed supported booru URL directly on the individual Stash image page with two explicit decisions:
-
-          - **Yes — import this source:** resolves that exact Danbooru, Gelbooru, Rule34, or e621 post and feeds it through the normal metadata importer. Tags, first-artist Studio mapping, additional artist tags, character Performers, source date, and canonical source URL follow the same preservation rules as automatic imports. The image is then marked `Multi-Booru Imported`.
-          - **No — mark No Match:** rejects the candidate, removes only that rejected candidate URL, preserves ordinary user metadata and URLs, replaces the Review marker with `Multi-Booru No Match`, and imports no candidate metadata.
-
-          The backend verifies that the submitted URL is still the active Review candidate. Review transitions keep that candidate URL last in the image URL list so multiple existing booru URLs cannot make the decision ambiguous.
-
-          ### Compatibility and safety
-
-          - Uses Stash's supported `ImageDetailPanel` UI plugin patch point and synchronous `runPluginOperation` API available in Stash v0.31.1.
-          - The Review UI respects Stash's configured base path rather than assuming the server is mounted at `/`.
-          - The stable internal package ID remains `DanbooruTagImporter` so source-installed copies continue to update in place.
-          - Existing automatic matching thresholds other than the Review floor are unchanged.
-          - SauceNAO HTTP 500/52x resilience, e621 pacing, Retry Later safeguards, and metadata-preservation behavior from 3.26.9 are retained.
+          - SauceNAO automatic import remains **95%+**.
+          - SauceNAO **85–94.99%** remains `Multi-Booru Review`.
+          - **Yes — import this source** still resolves that exact supported booru post and imports it through the normal metadata path.
+          - **No — mark No Match** still removes only the rejected candidate URL and writes `Multi-Booru No Match`.
+          - Existing metadata-preservation, active-candidate validation, and source-URL ordering safeguards are unchanged.
 
           ### Validation
 
           - Full regression suite passes with **95 tests**.
-          - JavaScript syntax validation passes for `BooruImporterReview.js`.
-          - Tests cover Yes importing through the normal metadata path, No writing No Match while removing only the candidate URL, active-candidate validation, and candidate URL ordering.
-          - The generated Stash source package is validated to contain the Review UI JavaScript and stable package identity.
+          - JavaScript syntax validation passes.
+          - The release gate explicitly verifies the corrected three-argument `ImageDetailPanel` callback and rejects the old two-argument form.
+          - The generated Stash package is verified to contain the updated `BooruImporterReview.js`.
 
-          ### Recommended installation / update
+          ### Update
 
-          Add or refresh this source in **Stash → Settings → Plugins**:
+          Refresh this Stash plugin source if needed:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.10** as an update after refreshing plugin sources if needed.
+          Existing source-based installs should show **Booru Importer 3.26.11** under **Installed Plugins → Update**.
 
-          ### Manual installation from GitHub Releases
+          ### Manual installation
 
-          Download **`Booru-Importer-v3.26.10.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.11.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
 
           EOF
 
