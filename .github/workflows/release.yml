@@ -87,43 +87,33 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.8
+          ## Booru Importer v3.26.9
 
-          This hardening release keeps the important reverse-search providers active during long Deep Match queues while reducing repetitive warning noise.
+          This patch cleans up SauceNAO HTTP 500 handling during Deep Match without changing matching thresholds or provider priority.
 
-          ### SauceNAO reliability
+          ### SauceNAO HTTP 500 handling
 
-          - **SauceNAO stays eligible for every image.** HTTP 520–524 failures no longer disable or skip SauceNAO for a 180-second block of the queue.
-          - **Short adaptive outage pacing.** After a 52x response, the next SauceNAO image search waits 5 seconds; repeated consecutive outages back off to 10 and then 20 seconds, capped at 20 seconds.
-          - **Automatic recovery.** A successful SauceNAO request reduces the outage streak so the provider returns toward normal account/quota pacing.
-          - **One outage warning per status.** Repeated identical 52x warnings are suppressed while per-image results remain visible at INFO level.
-          - **429 handling remains quota-aware.** SauceNAO still honors its account-reported short/long limits and pauses on real rate-limit responses without becoming a false No Match.
-
-          ### e621 IQDB hardening
-
-          - Authenticated e621 IQDB uploads use a 3-second base interval.
-          - 429/Cloudflare failures remain image-local; the next image is still eligible for e621 IQDB.
-          - Recovery from a throttled interval is gradual rather than immediately returning to the base rate after one successful request.
-          - Anonymous IQDB retains the conservative 65-second floor.
-
-          ### Cleaner Deep Match logging
-
-          - Per-image **RETRY LATER** lines are now INFO-level operational state rather than repeated warnings.
-          - The actual provider failure is still surfaced as a warning once, so genuine outages remain visible without flooding the Stash log.
-          - Retry Later still never writes a persistent No Match marker.
+          - **HTTP 500 is treated as a temporary provider outage.** The image stays Retry Later rather than becoming a false No Match.
+          - **HTML error pages are no longer copied into Stash logs.** The plugin reports a short clean message such as `SauceNAO temporarily unavailable: HTTP 500`.
+          - **SauceNAO remains enabled for the next image.** HTTP 500 uses the same short adaptive outage pacing as 520–524 responses instead of disabling SauceNAO.
+          - **Adaptive outage pacing remains bounded at 5 / 10 / 20 seconds.** A successful SauceNAO request reduces the outage streak.
+          - **Repeated provider warnings remain de-duplicated.** Per-image Retry Later state remains INFO-level operational logging.
 
           ### Behavior retained
 
-          - Danbooru IQDB remains first; e621 IQDB and SauceNAO run after a Danbooru miss when configured.
-          - Reverse-search uploads use Stash's generated 640px thumbnail rather than the original full-resolution image.
-          - Existing match/review confidence thresholds are unchanged.
+          - SauceNAO remains the final visual fallback after Danbooru IQDB misses, alongside e621 IQDB when configured.
+          - SauceNAO account-reported short/long quotas and the user-configurable polling ceiling are unchanged.
+          - e621 IQDB authenticated pacing remains 3 seconds with gradual post-throttle recovery.
+          - Retry Later never writes a persistent No Match marker.
+          - Existing match and Review confidence thresholds are unchanged.
           - The stable internal package ID remains `DanbooruTagImporter` for Stash's **Installed Plugins → Update** flow.
 
           ### Validation
 
-          - Full regression suite passes with **89 tests**.
-          - Dedicated tests prove that SauceNAO HTTP 521 affects only the current image, the next image searches SauceNAO again, 52x warnings are de-duplicated, and adaptive 5/10/20-second backoff is bounded.
-          - Existing e621, quota, state-safety, metadata, and package/update tests also pass.
+          - Full regression suite passes with **90 tests**.
+          - A dedicated regression feeds SauceNAO an HTTP 500 with an HTML body and verifies that neither the exception nor plugin log contains the HTML page.
+          - The same regression verifies that the next image remains eligible for SauceNAO after the HTTP 500.
+          - Source package generation and stable Stash package identity are validated before publication.
 
           ### Recommended installation / update
 
@@ -131,11 +121,12 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based users should see **Booru Importer 3.26.8** as an update after refreshing plugin sources if needed.
+          Existing source-based users should see **Booru Importer 3.26.9** as an update after refreshing plugin sources if needed.
 
           ### Manual installation from GitHub Releases
 
-          Download **`Booru-Importer-v3.26.8.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.9.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+
           EOF
 
       - name: Update initial public release notes
