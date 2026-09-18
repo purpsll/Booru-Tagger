@@ -428,7 +428,10 @@ class PluginSafetyTests(unittest.TestCase):
         self.assertEqual(result, "review_candidate")
         self.assertEqual(len(stash.updated), 1)
         self.assertEqual({t["name"] for t in image_obj["tags"]}, {plugin.REVIEW_MARKER_TAG})
-        self.assertIn("https://danbooru.donmai.us/posts/123", image_obj["urls"])
+        stored_review_url = image_obj["urls"][-1]
+        canonical_review_url, review_score = plugin._review_candidate_parts(stored_review_url)
+        self.assertEqual(canonical_review_url, "https://danbooru.donmai.us/posts/123")
+        self.assertEqual(review_score, 94.0)
         self.assertEqual(metrics.get("saucenao_queries"), 1)
         self.assertEqual(metrics.get("saucenao_review_candidates"), 1)
 
