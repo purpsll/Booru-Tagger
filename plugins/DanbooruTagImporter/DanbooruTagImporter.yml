@@ -3,6 +3,8 @@ description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, an
 version: 3.26.10
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=3s, anonymous uploads at >=65s, with adaptive post-429 backoff.
+# SauceNAO review policy: >=95% auto-import; 85-94.99% Review. Review images expose Yes/No controls on the individual image page.
+# Yes resolves the exact proposed source and imports through the normal metadata path; No removes that candidate URL and writes Multi-Booru No Match.
 # Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp and third-party_edit are ignored as artist metadata.
 exec:
   - python
@@ -92,7 +94,7 @@ tasks:
       force_recheck: false
 
   - name: 4. Recheck Review Candidates
-    description: Rechecks only images in the Review queue. A stronger result can promote an image to Imported; otherwise it can remain Review or move to No Match after an authoritative miss.
+    description: Rechecks only images in the Review queue. You can also open an individual Review image and use Yes to import the proposed source normally or No to mark it No Match. A stronger recheck can promote an image to Imported; otherwise it can remain Review or move to No Match after an authoritative miss.
     defaultArgs:
       mode: import_all
       lookup_mode: deep
