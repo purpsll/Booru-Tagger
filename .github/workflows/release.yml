@@ -87,31 +87,38 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.11
+          ## Booru Importer v3.26.12
 
-          This patch fixes the React crash introduced by the individual-image Review controls in v3.26.10.
+          This release adds SauceNAO confidence visibility to the individual-image Review workflow.
 
-          ### Fixed
+          ### Review confidence display
 
-          - Corrected the Stash `ImageDetailPanel` `patch.after` callback signature from two arguments to three:
-            `(props, _context, rendered)`.
-          - React passes an empty context object as the second original argument. v3.26.10 mistakenly treated that `{}` object as the rendered component, causing minified React error #31 when opening an image page.
-          - The Review panel now receives and renders the actual third `rendered` argument.
+          - Review candidates still use **95%+ for automatic import** and **85–94.99% for Review**.
+          - New or rechecked Review candidates persist the exact SauceNAO similarity that created the Review state.
+          - The individual image Review panel now displays that value directly, for example:
+            `Review confidence: 89.4% SauceNAO similarity (Review band: 85–94.99%)`.
+          - Review items created before v3.26.12 remain compatible and display **Not recorded — recheck this Review candidate to populate it** until they are rechecked.
 
-          ### Review workflow retained
+          ### Metadata and URL safety
 
-          - SauceNAO automatic import remains **95%+**.
-          - SauceNAO **85–94.99%** remains `Multi-Booru Review`.
-          - **Yes — import this source** still resolves that exact supported booru post and imports it through the normal metadata path.
-          - **No — mark No Match** still removes only the rejected candidate URL and writes `Multi-Booru No Match`.
-          - Existing metadata-preservation, active-candidate validation, and source-URL ordering safeguards are unchanged.
+          - The confidence value is stored only while the image is in Review using an internal URL fragment tied to the active candidate.
+          - The Review panel hides that internal fragment and shows/opens the clean canonical booru URL.
+          - **Yes — import this source** removes the internal confidence marker and leaves only the canonical source URL while importing all provider metadata through the normal path.
+          - **No — mark No Match** removes the stored Review candidate, including its confidence marker, and writes `Multi-Booru No Match`.
+          - No extra confidence tags are created and image details/notes are not modified.
+
+          ### Existing Review workflow retained
+
+          - The v3.26.11 React `ImageDetailPanel` callback fix remains in place.
+          - The backend still validates that the chosen URL is the current active Review candidate.
+          - Existing metadata-preservation rules, source-site resolution, artist/Studio mapping, character/Performer mapping, date handling, and Retry Later behavior are unchanged.
 
           ### Validation
 
-          - Full regression suite passes with **95 tests**.
-          - JavaScript syntax validation passes.
-          - The release gate explicitly verifies the corrected three-argument `ImageDetailPanel` callback and rejects the old two-argument form.
-          - The generated Stash package is verified to contain the updated `BooruImporterReview.js`.
+          - Full regression suite passes with **98 tests**.
+          - Python compilation and JavaScript syntax validation pass.
+          - Tests verify confidence persistence, legacy Review compatibility, clean canonical URL restoration after Yes, and the confidence UI text.
+          - The generated Stash package is verified to contain the updated Review JavaScript and stable `DanbooruTagImporter` package identity.
 
           ### Update
 
@@ -119,11 +126,13 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based installs should show **Booru Importer 3.26.11** under **Installed Plugins → Update**.
+          Existing source-based installs should show **Booru Importer 3.26.12** under **Installed Plugins → Update**.
+
+          After updating, a browser hard refresh may be useful because this release changes plugin JavaScript.
 
           ### Manual installation
 
-          Download **`Booru-Importer-v3.26.11.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.12.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
 
           EOF
 
