@@ -118,7 +118,7 @@ For images that Fast Scan cannot identify, **Deep Match** can use reverse-image-
 
 This is slower, but it can find images that have been resized, recompressed, cropped, or otherwise changed from the version stored on the original booru.
 
-Booru Importer only accepts strong matches automatically. Less-certain SauceNAO matches from 85–94.99% can be placed into a **Review** state instead of being treated as definite.
+Booru Importer only accepts strong matches automatically. Less-certain SauceNAO matches from 85–94.99% are placed into a **Review** state instead of being treated as definite. On the individual Stash image page, Booru Importer shows the proposed source URL with **Yes** and **No** controls.
 
 In **v3.26.10**, images already marked **Unresolved** do not repeat the Fast Scan work they already completed. Deep Match goes directly to visual search, uploads a Stash-generated 640px thumbnail instead of the original full-resolution image, and can run e621 IQDB and SauceNAO in parallel after Danbooru IQDB misses. An e621 IQDB rate-limit or Cloudflare failure applies only to the current image; the next image tries e621 IQDB again. This speeds up large unresolved queues without lowering the existing confidence thresholds.
 
@@ -146,7 +146,7 @@ Booru Importer uses a few status tags so it remembers what happened to each imag
 
 - **`Multi-Booru Imported`** — a match was accepted and metadata was imported.
 - **`Multi-Booru Unresolved`** — Fast Scan did not find a match; the image is waiting for Deep Match.
-- **`Multi-Booru Review`** — a possible match was found, but it was not confident enough to accept automatically.
+- **`Multi-Booru Review`** — a SauceNAO match between 85% and 94.99% needs confirmation. Open the individual image page to inspect the proposed source URL. **Yes** fetches that exact source post and imports its metadata through the normal importer; **No** removes the rejected candidate URL and moves the image to `Multi-Booru No Match`.
 - **`Multi-Booru No Match`** — the enabled search methods completed without finding a suitable match.
 
 These tags also keep the plugin from unnecessarily searching the same successfully processed images over and over.
