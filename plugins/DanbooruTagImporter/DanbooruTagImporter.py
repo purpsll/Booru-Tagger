@@ -843,7 +843,7 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
             payload=json.loads(raw)
     except urllib.error.HTTPError as exc:
         detail=exc.read().decode("utf-8",errors="replace")
-        if exc.code in {520, 521, 522, 523, 524}:
+        if exc.code in {500, 520, 521, 522, 523, 524}:
             _saucenao_note_outage(exc.code)
             raise RuntimeError(
                 f"SauceNAO temporarily unavailable: HTTP {exc.code}"
@@ -2888,7 +2888,7 @@ def process_image(
                 )
                 # 52x outages are already announced once by _saucenao_note_outage.
                 # Keep the per-image Retry Later result at INFO without another warning.
-                if not re.search(r"HTTP 52[0-4]", sauce_detail):
+                if not re.search(r"HTTP (?:500|52[0-4])", sauce_detail):
                     _log_lookup_problem_once("SauceNAO", sauce_detail)
 
     if post is None:
