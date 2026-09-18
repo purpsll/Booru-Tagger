@@ -316,7 +316,7 @@ class ReviewDecisionTests(unittest.TestCase):
         self.assertIn("Yes — import this source", ui)
         self.assertIn("No — mark No Match", ui)
         self.assertIn("Review confidence: ", ui)
-        self.assertIn("85–94.99%", ui)
+        self.assertIn("85.0–93.9%", ui)
         self.assertIn("Not recorded — recheck this Review candidate to populate it.", ui)
         self.assertIn("runPluginOperation", ui)
 
