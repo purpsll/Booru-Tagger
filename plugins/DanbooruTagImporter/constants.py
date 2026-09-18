@@ -56,7 +56,7 @@ DEEP_VISUAL_MAX_WORKERS = 2
 SAUCENAO_HIGH_CONFIDENCE = 94.0
 SAUCENAO_REVIEW_MINIMUM = 85.0
 # REVIEW-band results are deliberately review-only. This prevents a stale Stash
-# setting from silently auto-importing a 85-93.99% visual match.
+# setting from silently auto-importing an 85.0-93.9% visual match.
 SAUCENAO_ACCEPT_REVIEW_BAND = False
 # SauceNAO reports account-specific short-term (roughly 30-second) and long-term
 # quotas in each JSON response. 0 means auto-detect the account allowance after
