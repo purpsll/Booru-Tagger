@@ -1,0 +1,35 @@
+name: Test Stash Plugins
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/**'
+      - '.github/workflows/test-plugins.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compile Python
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python -m compileall -q plugins
+
+      - name: Test image plugin
+        if: ${{ hashFiles('plugins/DanbooruTagImporter/tests/test_*.py') != '' }}
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+
+      - name: Test video plugin
+        if: ${{ hashFiles('plugins/BooruVideoImporter/tests/test_*.py') != '' }}
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/BooruVideoImporter/tests -v
