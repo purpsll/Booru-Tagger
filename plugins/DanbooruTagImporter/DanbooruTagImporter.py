@@ -42,7 +42,7 @@ from constants import (
     CREATE_SECONDARY_ARTIST_STUDIOS, DANBOORU_BASE, DANBOORU_IQDB_MIN_SCORE,
     DEEP_VISUAL_HTTP_RETRIES, DEEP_VISUAL_MAX_WORKERS, DEEP_VISUAL_TIMEOUT_SECONDS,
     E621_BASE, E621_GENERAL_MIN_INTERVAL_SECONDS, E621_IQDB_ANON_MIN_INTERVAL_SECONDS,
-    E621_IQDB_AUTH_MIN_INTERVAL_SECONDS, E621_IQDB_MIN_SCORE,
+    E621_IQDB_AUTH_MIN_INTERVAL_SECONDS, E621_IQDB_MIN_SCORE, E621_IQDB_REVIEW_MIN_SCORE,
     E621_IQDB_RATE_LIMIT_BACKOFF_SECONDS, E621_IQDB_RATE_LIMIT_MAX_BACKOFF_SECONDS,
     E621_IQDB_RECOVERY_DECAY_SECONDS,
     ENABLE_DANBOORU, ENABLE_DANBOORU_IQDB,
@@ -612,17 +612,29 @@ def e621_iqdb(
     minimum_score: float,
     diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Reverse-search the existing Stash image against e621's IQDB endpoint.
+    """Reverse-search the existing Stash image against e621's ERIS-backed endpoint.
 
-    The image is uploaded in memory only; no duplicate image is written to disk.
-    A failure on one image never disables IQDB for the next image in the queue.
+    e621 still accepts multipart file uploads at /iqdb_queries.json. Request the
+    current v2 response shape explicitly, while retaining legacy response parsing
+    for compatibility with older e621 deployments.
+
+    minimum_score is the lowest score worth returning to the caller. The caller
+    decides whether that result is strong enough to auto-import or should be
+    surfaced for Review.
     """
     e621_host = (urllib.parse.urlparse(E621_BASE).hostname or "e621.net").casefold()
     HTTP.clear_host_failures(e621_host)
     _e621_iqdb_wait_for_slot(username, api_key)
-    boundary = "----StashE621IQDBBoundary7MA4YWxkTrZu0gW"
+    boundary = "----StashE621ERISBoundary7MA4YWxkTrZu0gW"
     chunks: List[bytes] = []
 
+    chunks.append(
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="score_cutoff"\r\n\r\n'
+            f"{float(minimum_score):.1f}\r\n"
+        ).encode("utf-8")
+    )
     chunks.append(
         (
             f"--{boundary}\r\n"
@@ -646,7 +658,7 @@ def e621_iqdb(
         headers["Authorization"] = f"Basic {token}"
 
     req = urllib.request.Request(
-        f"{E621_BASE}/iqdb_queries.json",
+        f"{E621_BASE}/iqdb_queries.json?v2=true",
         data=body,
         method="POST",
         headers=headers,
@@ -682,20 +694,21 @@ def e621_iqdb(
                 " / Cloudflare challenge" if cloudflare_challenge else ""
             )
             raise RuntimeError(
-                f"e621 IQDB temporarily unavailable for this image: {reason}"
+                f"e621 ERIS temporarily unavailable for this image: {reason}"
             ) from exc
 
-        raise RuntimeError(f"e621 IQDB HTTP {exc.code}: {detail[:300]}") from exc
+        if exc.code == 503:
+            raise RuntimeError("e621 ERIS temporarily unavailable: HTTP 503") from exc
+
+        raise RuntimeError(f"e621 ERIS HTTP {exc.code}: {detail[:300]}") from exc
 
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"e621 IQDB returned non-JSON response: {' '.join(raw.split())[:240]}"
+            f"e621 ERIS returned non-JSON response: {' '.join(raw.split())[:240]}"
         ) from exc
 
-    # e621/Danbooru-family IQDB results have historically appeared as either
-    # a top-level list or a dict containing result arrays.
     if isinstance(payload, list):
         rows = payload
     elif isinstance(payload, dict):
@@ -705,32 +718,34 @@ def e621_iqdb(
             if isinstance(value, list):
                 rows = value
                 break
-        if rows is None and (payload.get("post") or payload.get("id")):
+        if rows is None and (payload.get("post") or payload.get("post_id") or payload.get("id")):
             rows = [payload]
         if rows is None:
-            raise RuntimeError("e621 IQDB returned an unexpected response shape")
+            raise RuntimeError("e621 ERIS returned an unexpected response shape")
     else:
-        raise RuntimeError("e621 IQDB returned an unexpected response shape")
+        raise RuntimeError("e621 ERIS returned an unexpected response shape")
 
-    ranked: List[Tuple[float, Dict[str, Any]]] = []
+    ranked: List[Tuple[float, Optional[str], Dict[str, Any]]] = []
     best_seen_score = 0.0
+    best_seen_post_id = ""
 
     for row in rows:
         if not isinstance(row, dict):
             continue
 
         post_obj = row.get("post")
+        if isinstance(post_obj, dict) and isinstance(post_obj.get("posts"), dict):
+            post_obj = post_obj.get("posts")
         if not isinstance(post_obj, dict):
-            post_obj = row if row.get("id") else None
-        if not isinstance(post_obj, dict):
-            continue
+            post_obj = row if row.get("id") else {}
 
-        score_value = (
-            row.get("score")
-            if row.get("score") is not None
-            else row.get("similarity")
-        )
-        if score_value is None:
+        post_id_value = row.get("post_id")
+        if post_id_value is None and isinstance(post_obj, dict):
+            post_id_value = post_obj.get("id")
+        post_id = str(post_id_value).strip() if post_id_value is not None else ""
+
+        score_value = row.get("score") if row.get("score") is not None else row.get("similarity")
+        if score_value is None and isinstance(post_obj, dict):
             score_value = post_obj.get("iqdb_score")
 
         try:
@@ -738,38 +753,44 @@ def e621_iqdb(
         except (TypeError, ValueError):
             score = 0.0
 
-        # Some clients expose similarity as 0..1, others as 0..100.
         if 0 < score <= 1:
             score *= 100.0
 
-        best_seen_score = max(best_seen_score, score)
-        if score >= minimum_score:
-            ranked.append((score, post_obj))
+        if score > best_seen_score:
+            best_seen_score = score
+            best_seen_post_id = post_id
+
+        if score >= minimum_score and (post_id or post_obj):
+            ranked.append((score, post_id or None, dict(post_obj)))
 
     if diagnostics is not None:
         diagnostics["best_score"] = best_seen_score
+        diagnostics["best_post_id"] = best_seen_post_id
+        diagnostics["best_url"] = (
+            f"https://e621.net/posts/{best_seen_post_id}" if best_seen_post_id else ""
+        )
         diagnostics["candidate_count"] = len(rows)
+        diagnostics["qualifying_candidate_count"] = len(ranked)
         diagnostics["minimum_score"] = minimum_score
+        diagnostics["response_version"] = "v2"
 
     if not ranked:
         return None
 
-    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    ranked.sort(key=lambda item: item[0], reverse=True)
 
-    for score, post_obj in ranked:
-        # Prefer resolving the full current post payload by ID so tag/category
-        # structure is consistent with normal e621 MD5 matches.
-        post_id = post_obj.get("id")
+    for score, post_id, post_obj in ranked:
         if post_id:
-            resolved = e621_post_by_id(str(post_id), username, api_key)
+            resolved = e621_post_by_id(post_id, username, api_key)
             if resolved:
                 resolved["_e621_iqdb_score"] = score
+                resolved["_e621_iqdb_candidate_url"] = f"https://e621.net/posts/{post_id}"
                 return resolved
 
-        # Fall back to the returned post object if it is already complete enough.
         if post_obj.get("tags") and post_obj.get("file"):
-            post_obj = dict(post_obj)
             post_obj["_e621_iqdb_score"] = score
+            if post_obj.get("id"):
+                post_obj["_e621_iqdb_candidate_url"] = f"https://e621.net/posts/{post_obj['id']}"
             return post_obj
 
     return None
@@ -3372,7 +3393,7 @@ def process_image(
 
             if run_e621_iqdb:
                 minimum_e621_score = max(
-                    0.0, min(100.0, float(E621_IQDB_MIN_SCORE))
+                    0.0, min(100.0, float(E621_IQDB_REVIEW_MIN_SCORE))
                 )
                 _metric(metrics, "e621_iqdb_queries")
                 visual_jobs["e621"] = (
@@ -3443,21 +3464,48 @@ def process_image(
             outcomes.append(e621_outcome)
             best_score = float(e621_iqdb_diag.get("best_score", 0.0) or 0.0)
             if e621_outcome.matched:
-                source, post, match_method = (
-                    "e621", e621_outcome.value, "e621_iqdb"
+                e621_candidate = e621_outcome.value
+                e621_score = float(
+                    e621_candidate.get("_e621_iqdb_score", best_score) or 0.0
                 )
-                decision_details.append(
-                    f"e621 IQDB: match "
-                    f"{post.get('_e621_iqdb_score', best_score):.1f}%"
-                )
+                e621_url = str(
+                    e621_candidate.get("_e621_iqdb_candidate_url")
+                    or e621_iqdb_diag.get("best_url")
+                    or (
+                        f"https://e621.net/posts/{e621_candidate.get('id')}"
+                        if e621_candidate.get("id") else ""
+                    )
+                ).strip()
+                if e621_score >= float(E621_IQDB_MIN_SCORE):
+                    source, post, match_method = (
+                        "e621", e621_candidate, "e621_iqdb"
+                    )
+                    decision_details.append(
+                        f"e621 ERIS: match {e621_score:.1f}% (AUTO)"
+                    )
+                    _metric(metrics, "e621_iqdb_auto_matches")
+                elif e621_url and e621_score >= float(E621_IQDB_REVIEW_MIN_SCORE):
+                    if e621_score > review_candidate_score:
+                        review_candidate_score = e621_score
+                        review_candidate_url = e621_url
+                    _metric(metrics, "e621_iqdb_review_candidates")
+                    decision_details.append(
+                        f"e621 ERIS: review candidate {e621_score:.1f}% "
+                        f"(AUTO starts at {float(E621_IQDB_MIN_SCORE):.1f}%)"
+                    )
+                else:
+                    decision_details.append(
+                        f"e621 ERIS: qualifying result {e621_score:.1f}% "
+                        "without a usable post URL"
+                    )
             elif e621_outcome.status == LookupStatus.MISS:
                 decision_details.append(
-                    "e621 IQDB: no qualifying result"
+                    "e621 ERIS: no qualifying result"
                     + (f" (best {best_score:.1f}%)" if best_score else "")
                 )
             else:
                 decision_details.append(
-                    f"e621 IQDB: {e621_outcome.status.value}"
+                    f"e621 ERIS: {e621_outcome.status.value}"
                     + (f" ({e621_outcome.detail})" if e621_outcome.detail else "")
                 )
                 _log_lookup_problem_once(
@@ -3513,9 +3561,12 @@ def process_image(
                 and not saucenao_accept_review
                 and review_options
             ):
-                review_candidate_score, review_candidate_url, review_kind = max(
+                sauce_review_score, sauce_review_url, review_kind = max(
                     review_options, key=lambda item: item[0]
                 )
+                if sauce_review_score > review_candidate_score:
+                    review_candidate_score = sauce_review_score
+                    review_candidate_url = sauce_review_url
                 outcomes.append(saucenao_outcome)
                 _metric(metrics, "saucenao_review_candidates")
                 _metric(metrics, "saucenao_review_band_matches")
@@ -3523,7 +3574,7 @@ def process_image(
                     _metric(metrics, "saucenao_unsupported_results")
                 decision_details.append(
                     f"SauceNAO: {review_kind} review candidate "
-                    f"{review_candidate_score:.1f}% not auto-accepted "
+                    f"{sauce_review_score:.1f}% not auto-accepted "
                     f"(HIGH starts at {saucenao_auto_accept:.1f}%)"
                 )
             else:
