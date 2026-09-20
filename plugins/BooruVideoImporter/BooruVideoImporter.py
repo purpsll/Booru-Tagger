@@ -322,17 +322,20 @@ def _rule34_tag_types(
     api_key: str,
     user_id: str,
 ) -> Dict[str, int]:
+    """Best-effort category enrichment without one network request per tag."""
     global _LAST_RULE34
     result: Dict[str, int] = {}
-    for name in list(names)[:40]:
+    names = [str(x) for x in names if str(x).strip()]
+    for start in range(0, len(names), 50):
+        chunk = names[start:start + 50]
         _LAST_RULE34 = _wait(_LAST_RULE34, 1.0)
         query = {
             "page": "dapi",
             "s": "tag",
             "q": "index",
             "json": "1",
-            "name": name,
-            "limit": "1",
+            "names": " ".join(chunk),
+            "limit": "100",
             "api_key": api_key,
             "user_id": user_id,
         }
@@ -342,7 +345,7 @@ def _rule34_tag_types(
                 headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             )
         except Exception:
-            break
+            continue
         rows = payload if isinstance(payload, list) else (
             payload.get("tag") if isinstance(payload, dict) else None
         )
@@ -353,13 +356,13 @@ def _rule34_tag_types(
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if str(row.get("name") or "").casefold() != name.casefold():
+            name = str(row.get("name") or "").strip()
+            if not name:
                 continue
             try:
                 result[name] = int(row.get("type"))
             except (TypeError, ValueError):
-                pass
-            break
+                continue
     return result
 
 
@@ -666,7 +669,7 @@ def fetch_candidate(
     api_key = str(settings.get("rule34_api_key") or "")
     user_id = str(settings.get("rule34_user_id") or "")
     if not (api_key and user_id):
-        return None
+        raise RuntimeError("Rule34 user ID and API key are required to resolve this candidate")
     return rule34_post_by_id(post_id, api_key, user_id)
 
 
@@ -719,13 +722,12 @@ def discover_candidates(
             had_error = True
             continue
 
+        frame_hits: Dict[Tuple[str, str], float] = {}
         if have_sauce:
             try:
                 for score, source, post_id in saucenao_candidates(frame, settings):
                     key = (source, post_id)
-                    state = found.setdefault(key, {"hits": 0.0, "score": 0.0})
-                    state["hits"] += 1
-                    state["score"] = max(state["score"], float(score))
+                    frame_hits[key] = max(frame_hits.get(key, 0.0), float(score))
             except Exception as exc:
                 log("WARNING", f"SauceNAO video-frame lookup failed: {exc}")
                 had_error = True
@@ -734,12 +736,15 @@ def discover_candidates(
             try:
                 for score, post_id in e621_eris_candidates(frame, username, api_key):
                     key = ("e621", post_id)
-                    state = found.setdefault(key, {"hits": 0.0, "score": 0.0})
-                    state["hits"] += 1
-                    state["score"] = max(state["score"], float(score))
+                    frame_hits[key] = max(frame_hits.get(key, 0.0), float(score))
             except Exception as exc:
                 log("WARNING", f"e621 ERIS video-frame lookup failed: {exc}")
                 had_error = True
+
+        for key, score in frame_hits.items():
+            state = found.setdefault(key, {"hits": 0.0, "score": 0.0})
+            state["hits"] += 1
+            state["score"] = max(state["score"], score)
 
     ranked = [
         (source, post_id, int(state["hits"]), float(state["score"]))
@@ -956,6 +961,13 @@ def import_all(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> 
                 progress(stats["seen"] / max(1, limit))
             elif count:
                 progress(min(1.0, stats["seen"] / max(1, count)))
+        if target_tag_id:
+            # Queue membership shrinks as status tags are replaced. Re-read page 1
+            # so changing pagination cannot skip scenes.
+            if dry_run:
+                break
+            page = 1
+            continue
         if page * per_page >= count:
             break
         page += 1
