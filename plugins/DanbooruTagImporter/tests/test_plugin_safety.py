@@ -435,15 +435,62 @@ class PluginSafetyTests(unittest.TestCase):
         self.assertEqual(metrics.get("saucenao_queries"), 1)
         self.assertEqual(metrics.get("saucenao_review_candidates"), 1)
 
-    def test_strong_unsupported_saucenao_result_stays_pending(self):
+    def test_external_saucenao_review_band_with_url_moves_to_review(self):
+        stash = ProcessFakeStash()
+        settings = {"saucenao_api_key": "key"}
+        metrics = {}
+        external_url = "https://twitter.com/example/status/123456789"
+
+        def external_review_miss(*args, **kwargs):
+            kwargs["diagnostics"].update({
+                "best_similarity": 87.6,
+                "best_supported_similarity": 0.0,
+                "best_supported_url": "",
+                "best_external_similarity": 87.6,
+                "best_external_url": external_url,
+            })
+            return None
+
+        with mock.patch.object(plugin, "ENABLE_GELBOORU", False), \
+             mock.patch.object(plugin, "ENABLE_RULE34", False), \
+             mock.patch.object(plugin, "ENABLE_E621", False), \
+             mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \
+             mock.patch.object(plugin, "ENABLE_E621_IQDB", False), \
+             mock.patch.object(plugin, "ENABLE_LOCAL_PHASH_REUSE", False), \
+             mock.patch.object(plugin, "danbooru_post", return_value=None), \
+             mock.patch.object(plugin, "saucenao_resolve", side_effect=external_review_miss):
+            image_obj = md5_image()
+            image_obj["tags"] = [
+                {"id": "old-unresolved", "name": plugin.UNRESOLVED_MARKER_TAG}
+            ]
+            result = plugin.process_image(
+                stash, image_obj, settings, {}, False, {}, {}, {}, {},
+                plugin.PHashIndex(), lookup_mode="deep", metrics=metrics
+            )
+
+        self.assertEqual(result, "review_candidate")
+        self.assertEqual(
+            {tag["name"] for tag in image_obj["tags"]},
+            {plugin.REVIEW_MARKER_TAG},
+        )
+        stored_review_url = image_obj["urls"][-1]
+        canonical_url, score = plugin._review_candidate_parts(stored_review_url)
+        self.assertEqual(canonical_url, external_url)
+        self.assertEqual(score, 87.6)
+        self.assertEqual(metrics.get("saucenao_review_candidates"), 1)
+        self.assertEqual(metrics.get("saucenao_review_band_matches"), 1)
+
+    def test_external_review_band_without_url_stays_pending(self):
         stash = ProcessFakeStash()
         settings = {"saucenao_api_key": "key"}
         metrics = {}
 
         def unsupported_miss(*args, **kwargs):
             kwargs["diagnostics"].update({
-                "best_similarity": 93.0,
+                "best_similarity": 87.6,
                 "best_supported_similarity": 0.0,
+                "best_external_similarity": 87.6,
+                "best_external_url": "",
             })
             return None
 
