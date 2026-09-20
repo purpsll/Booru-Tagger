@@ -69,7 +69,7 @@ Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and 
 Results:
 
 - accepted match -> `Multi-Booru Imported`
-- SauceNAO supported candidate at 85.0–92.9% -> `Multi-Booru Review`
+- SauceNAO candidate at 85.0–92.9% with a usable source URL -> `Multi-Booru Review`, including external SauceNAO sources
 - authoritative miss across all active stages -> `Multi-Booru No Match`
 - temporary/provider failure -> current state is retained for a later retry
 
@@ -86,7 +86,7 @@ The UI validates that the chosen URL is still the active Review candidate before
 
 Rechecks only `Multi-Booru Review` images. A stronger result can become Imported; a review-band result stays Review; an authoritative miss becomes No Match; a temporary failure leaves the Review state unchanged.
 
-When available, the review candidate's booru URL is appended to the Stash image URL list so it can be inspected directly.
+When available, the review candidate's source URL is appended to the Stash image URL list so it can be inspected directly.
 
 ### 5. Retry No-Match Images
 
