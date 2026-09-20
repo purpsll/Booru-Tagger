@@ -4,7 +4,7 @@ Credentials / account identifiers plus the SauceNAO polling ceiling are user-con
 in Stash. Other operational presets live here so installations share the same policy.
 """
 
-VERSION = "3.26.22"
+VERSION = "3.26.23"
 PLUGIN_ID = "DanbooruTagImporter"
 USER_AGENT = f"stash-multibooru-tag-importer/{VERSION}"
 
@@ -37,6 +37,10 @@ ENABLE_DANBOORU_IQDB = True
 DANBOORU_IQDB_MIN_SCORE = 95.0
 ENABLE_E621_IQDB = True
 E621_IQDB_MIN_SCORE = 90.0
+# ERIS/e621 itself defaults reverse-image results to 60. Scores below the
+# auto-import threshold remain useful candidates, so preserve 60.0-89.9 as
+# Review instead of discarding them as misses.
+E621_IQDB_REVIEW_MIN_SCORE = 60.0
 # e621 publishes a 2 req/s hard API ceiling and recommends <=1 req/s sustained.
 # Reverse-image file uploads are more heavily throttled. Authenticated IQDB
 # uploads are paced below the current 6-per-10-second allowance; anonymous
