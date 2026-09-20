@@ -158,3 +158,163 @@ def e621_post_by_id(post_id: str, username: str, api_key: str) -> Optional[Dict[
         post = payload.get("post")
         if isinstance(post, dict):
             return post
+        if payload.get("id"):
+            return payload
+    return None
+
+
+def e621_post_by_md5(md5: str, username: str, api_key: str) -> Optional[Dict[str, Any]]:
+    params = urllib.parse.urlencode({"tags": f"md5:{md5}", "limit": "1"})
+    payload = e621_request(f"{E621_BASE}/posts.json?{params}", username, api_key)
+    posts = payload.get("posts") if isinstance(payload, dict) else None
+    if not isinstance(posts, list):
+        return None
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        if str((post.get("file") or {}).get("md5") or "").casefold() == md5.casefold():
+            return post
+    return None
+
+
+def _multipart(boundary: str, fields: Dict[str, str], file_bytes: bytes, filename: str) -> bytes:
+    chunks: List[bytes] = []
+    for key, value in fields.items():
+        chunks.append(
+            (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n").encode("utf-8")
+        )
+    chunks.append(
+        (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+         "Content-Type: image/jpeg\r\n\r\n").encode("utf-8")
+        + file_bytes
+        + b"\r\n"
+    )
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks)
+
+
+def e621_iqdb_candidates(frame: bytes, username: str, api_key: str) -> List[Tuple[float, Dict[str, Any]]]:
+    global _LAST_E621_IQDB_REQUEST
+    interval = 3.0 if username and api_key else 65.0
+    _LAST_E621_IQDB_REQUEST = _wait(_LAST_E621_IQDB_REQUEST, interval)
+    boundary = "----BooruVideoE621Boundary7MA4YWxkTrZu0gW"
+    body = _multipart(boundary, {}, frame, "stash-video-frame.jpg")
+    headers = e621_headers(username, api_key)
+    headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    try:
+        payload = _json_request(f"{E621_BASE}/iqdb_queries.json", headers=headers, data=body, timeout=60)
+    except RuntimeError as exc:
+        text = str(exc).casefold()
+        if "http 404" in text or "http 422" in text:
+            return []
+        raise
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = next((payload[k] for k in ("posts", "matches", "results") if isinstance(payload.get(k), list)), None)
+        if rows is None and (payload.get("post") or payload.get("id")):
+            rows = [payload]
+    else:
+        rows = None
+    if not isinstance(rows, list):
+        raise RuntimeError("e621 IQDB returned an unexpected response shape")
+    candidates: List[Tuple[float, Dict[str, Any]]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        post = row.get("post") if isinstance(row.get("post"), dict) else row if row.get("id") else None
+        if not isinstance(post, dict):
+            continue
+        raw_score = row.get("score", row.get("similarity", post.get("iqdb_score", 0)))
+        try:
+            score = float(raw_score or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if 0 < score <= 1:
+            score *= 100.0
+        if score < E621_IQDB_MIN_SCORE:
+            continue
+        post_id = post.get("id")
+        resolved = e621_post_by_id(str(post_id), username, api_key) if post_id else None
+        if resolved:
+            candidates.append((score, resolved))
+        elif post.get("file"):
+            candidates.append((score, dict(post)))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates
+
+
+def _normalize_rule34_posts(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        for key in ("post", "posts"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
+            if isinstance(value, dict):
+                return [value]
+        if payload.get("id"):
+            return [payload]
+    return []
+
+
+def rule34_request(params: Dict[str, str], api_key: str, user_id: str) -> Any:
+    global _LAST_RULE34_REQUEST
+    _LAST_RULE34_REQUEST = _wait(_LAST_RULE34_REQUEST, 1.0)
+    query = {
+        "page": "dapi", "s": "post", "q": "index", "json": "1",
+        "api_key": api_key, "user_id": user_id,
+        **params,
+    }
+    url = f"{RULE34_API}?{urllib.parse.urlencode(query)}"
+    return _json_request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+
+
+def rule34_post_by_id(post_id: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+    rows = _normalize_rule34_posts(rule34_request({"id": str(post_id), "limit": "1"}, api_key, user_id))
+    return rows[0] if rows else None
+
+
+def rule34_post_by_md5(md5: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+    rows = _normalize_rule34_posts(rule34_request({"tags": f"md5:{md5}", "limit": "1"}, api_key, user_id))
+    for post in rows:
+        if str(post.get("hash") or post.get("md5") or "").casefold() == md5.casefold():
+            return post
+    return rows[0] if rows else None
+
+
+def _rule34_tag_types(names: Sequence[str], api_key: str, user_id: str) -> Dict[str, int]:
+    """Best-effort Rule34 category lookup: type 1 artist, type 4 character."""
+    global _LAST_RULE34_REQUEST
+    result: Dict[str, int] = {}
+    if not names:
+        return result
+
+    def fetch(params: Dict[str, str]) -> List[Dict[str, Any]]:
+        nonlocal result
+        global _LAST_RULE34_REQUEST
+        _LAST_RULE34_REQUEST = _wait(_LAST_RULE34_REQUEST, 1.0)
+        q = {
+            "page": "dapi", "s": "tag", "q": "index", "json": "1", "limit": "100",
+            "api_key": api_key, "user_id": user_id, **params,
+        }
+        payload = _json_request(f"{RULE34_API}?{urllib.parse.urlencode(q)}", headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+        if isinstance(payload, list):
+            return [x for x in payload if isinstance(x, dict)]
+        if isinstance(payload, dict):
+            value = payload.get("tag") or payload.get("tags")
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
+            if isinstance(value, dict):
+                return [value]
+        return []
+
+    for start in range(0, len(names), 50):
+        chunk = list(names[start:start + 50])
+        try:
+            rows = fetch({"names": " ".join(chunk)})
+        except Exception:
+            rows = []
+        seen = set()
+        for row in rows:
