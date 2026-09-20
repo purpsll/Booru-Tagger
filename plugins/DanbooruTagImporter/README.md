@@ -1,10 +1,10 @@
-# Booru Importer v3.26.21
+# Booru Importer v3.26.22
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.21 lowers the displayed SauceNAO automatic-import threshold to 93.0%. v3.26.20 fixed two Deep Match edge cases: oversized Stash thumbnail fallbacks are resized before SauceNAO upload, and a high-confidence SauceNAO hit from an external source is no longer misclassified as No Match. High-confidence external matches now import verified source metadata; Yande.re and Konachan are additionally resolved through their post APIs so their authoritative tags can be imported.
+v3.26.22 routes external SauceNAO results in the 85.0–92.9% band to Review when SauceNAO supplies a usable source URL. Review-band hits without a source URL remain pending. v3.26.21 lowered the displayed SauceNAO automatic-import threshold to 93.0%. v3.26.20 fixed two Deep Match edge cases: oversized Stash thumbnail fallbacks are resized before SauceNAO upload, and a high-confidence SauceNAO hit from an external source is no longer misclassified as No Match. High-confidence external matches now import verified source metadata; Yande.re and Konachan are additionally resolved through their post APIs so their authoritative tags can be imported.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -75,12 +75,12 @@ Results:
 
 ### Review candidates on an individual image
 
-When an image is tagged `Multi-Booru Review`, the individual Stash image page displays the proposed supported booru URL and two explicit decisions: It also displays the exact persisted SauceNAO similarity percentage that caused the Review state.
+When an image is tagged `Multi-Booru Review`, the individual Stash image page displays the proposed source URL—supported booru or external SauceNAO—and two explicit decisions. It also displays the exact persisted SauceNAO similarity percentage that caused the Review state.
 
-- **Yes — import this source:** resolves that exact Danbooru, Gelbooru, Rule34, or e621 post and sends it through the same normal metadata path used by automatic matches. Source tags, artist/Studio mapping, character/Performer mapping, source date, and canonical source URL follow the normal preservation rules, then the image becomes `Multi-Booru Imported`.
+- **Yes — import this source:** directly resolves Danbooru/Gelbooru/Rule34/e621 candidates. For an external candidate, it re-runs SauceNAO at the Review floor and requires the same source URL to remain the strongest qualifying result before importing verified external metadata. Source tags are imported only when the matched source exposes authoritative tags; artist/Studio mapping, character/Performer mapping, source date, title/creator metadata, and canonical source URL follow the normal preservation rules. The image then becomes `Multi-Booru Imported`.
 - **No — mark No Match:** removes the rejected candidate URL, replaces the Review workflow marker with `Multi-Booru No Match`, and does not import candidate metadata.
 
-The UI validates that the chosen URL is still the active Review candidate before either action is applied. The Stash v0.31.1 `ImageDetailPanel` callback compatibility fix from v3.26.11 remains in place. The confidence is stored only while the image is in Review using an internal URL fragment that the UI hides from the visible source link. On Yes, that internal marker is removed and only the canonical booru URL remains. Review items created before v3.26.12 display **Not recorded** until rechecked.
+The UI validates that the chosen URL is still the active Review candidate before either action is applied. The Stash v0.31.1 `ImageDetailPanel` callback compatibility fix from v3.26.11 remains in place. The confidence is stored only while the image is in Review using an internal URL fragment that the UI hides from the visible source link. On Yes, that internal marker is removed and only the canonical source URL remains. Review items created before v3.26.12 display **Not recorded** until rechecked.
 
 ### 4. Recheck Review Candidates
 
