@@ -1,0 +1,80 @@
+name: Booru Video Importer
+description: Separate scene/video reverse-search plugin for e621 and Rule34. Uses exact video MD5 first, then representative video frames to discover candidate posts, verifies candidate videos across multiple perceptual frame hashes, and imports authoritative metadata only after video verification.
+version: 1.0.0
+
+exec:
+  - python
+  - "{pluginDir}/BooruVideoImporter.py"
+
+interface: raw
+errLog: info
+
+settings:
+  e621_username:
+    displayName: e621 username
+    description: Recommended. Enables authenticated e621 API requests and ERIS frame discovery.
+    type: STRING
+
+  e621_api_key:
+    displayName: e621 API key
+    description: Recommended with the e621 username. Never written to plugin logs.
+    type: STRING
+
+  rule34_user_id:
+    displayName: Rule34 user ID
+    description: Required for authoritative Rule34 post/tag metadata resolution.
+    type: STRING
+
+  rule34_api_key:
+    displayName: Rule34 API key
+    description: Required with the Rule34 user ID. Never written to plugin logs.
+    type: STRING
+
+  saucenao_api_key:
+    displayName: SauceNAO API key
+    description: Strongly recommended for Deep Reverse Search. SauceNAO is used only to locate e621/Rule34 candidate posts from video frames; metadata always comes from the source booru.
+    type: STRING
+
+  saucenao_requests_per_30_seconds:
+    displayName: SauceNAO searches per 30 seconds
+    description: Leave blank or 0 for Auto. The plugin learns the account short-term allowance from SauceNAO responses, including paid accounts. Set a positive number only to cap it lower.
+    type: NUMBER
+
+tasks:
+  - name: 1. Scan Unprocessed Videos (Fast)
+    description: Start here. Checks unclassified Stash scenes for exact video-file MD5 matches on e621 and Rule34. Exact video matches import metadata immediately; misses are queued as Booru Video Unresolved.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: fast
+      dry_run: false
+
+  - name: 2. Preview Deep Reverse Search (10 Videos, No Changes)
+    description: Tests the next 10 unresolved videos without changing Stash. Extracts representative frames, locates e621/Rule34 candidates, and verifies actual candidate videos across multiple perceptual frame hashes.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: true
+      limit: 10
+
+  - name: 3. Deep Reverse Search All Unresolved Videos
+    description: Runs frame-based reverse search only on Booru Video Unresolved scenes. Verified matches import authoritative tags, source URLs, date, characters as performers, and artist/studio metadata. Borderline multi-frame matches become Booru Video Review.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: false
+
+  - name: 4. Recheck Video Review Candidates
+    description: Re-runs full video verification on scenes currently tagged Booru Video Review.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: false
+      only_review: true
+
+  - name: 5. Retry Video No-Match Scenes
+    description: Rechecks scenes currently tagged Booru Video No Match after source indexes may have changed.
+    defaultArgs:
+      mode: import_all
+      lookup_mode: deep
+      dry_run: false
+      only_no_match: true
