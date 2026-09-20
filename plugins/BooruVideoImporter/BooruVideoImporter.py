@@ -318,3 +318,163 @@ def _rule34_tag_types(names: Sequence[str], api_key: str, user_id: str) -> Dict[
             rows = []
         seen = set()
         for row in rows:
+            name = str(row.get("name") or "").strip()
+            try:
+                tag_type = int(row.get("type"))
+            except (TypeError, ValueError):
+                continue
+            if name:
+                result[name] = tag_type
+                seen.add(name.casefold())
+        missing = [x for x in chunk if x.casefold() not in seen]
+        # Rule34 does not consistently support the batch names parameter.
+        for name in missing[:20]:
+            try:
+                single = fetch({"name": name})
+            except Exception:
+                break
+            for row in single:
+                if str(row.get("name") or "").casefold() != name.casefold():
+                    continue
+                try:
+                    result[name] = int(row.get("type"))
+                except (TypeError, ValueError):
+                    pass
+                break
+    return result
+
+
+def _saucenao_wait(settings: Dict[str, Any]) -> None:
+    global _LAST_SAUCENAO_REQUEST
+    requested = as_float(settings.get("saucenao_requests_per_30_seconds"), 0.0)
+    effective = requested if requested > 0 else max(1.0, _SAUCENAO_SHORT_LIMIT)
+    _LAST_SAUCENAO_REQUEST = _wait(_LAST_SAUCENAO_REQUEST, 30.0 / effective)
+
+
+def saucenao_candidates(frame: bytes, settings: Dict[str, Any]) -> List[Tuple[float, str, str]]:
+    """Return (similarity, source, post_id) only for e621/Rule34 results."""
+    global _SAUCENAO_SHORT_LIMIT
+    api_key = str(settings.get("saucenao_api_key") or "").strip()
+    if not api_key:
+        return []
+    _saucenao_wait(settings)
+    boundary = "----BooruVideoSauceNAOBoundary7MA4YWxkTrZu0gW"
+    body = _multipart(boundary, {"api_key": api_key, "output_type": "2", "numres": "12", "db": "999"}, frame, "stash-video-frame.jpg")
+    payload = _json_request(
+        SAUCENAO_API,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json", "Content-Type": f"multipart/form-data; boundary={boundary}"},
+        data=body,
+        timeout=60,
+    )
+    if isinstance(payload, dict):
+        header = payload.get("header") or {}
+        try:
+            short_limit = float(header.get("short_limit") or 0)
+        except (TypeError, ValueError):
+            short_limit = 0.0
+        if short_limit > 0:
+            _SAUCENAO_SHORT_LIMIT = short_limit
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return []
+    out: List[Tuple[float, str, str]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        try:
+            score = round(float((item.get("header") or {}).get("similarity") or 0), 1)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score < SAUCENAO_MIN_SCORE:
+            continue
+        data = item.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        if data.get("e621_id"):
+            out.append((score, "e621", str(data["e621_id"])))
+        urls = data.get("ext_urls") or []
+        if isinstance(urls, str):
+            urls = [urls]
+        for url in urls:
+            text = str(url)
+            m = re.search(r"e621\.net/posts/(\d+)", text)
+            if m:
+                out.append((score, "e621", m.group(1)))
+            m = re.search(r"rule34\.xxx/.*[?&]id=(\d+)", text)
+            if m:
+                out.append((score, "rule34", m.group(1)))
+    return out
+
+
+def media_url(source: str, post: Dict[str, Any]) -> Optional[str]:
+    if source == "e621":
+        file_obj = post.get("file") or {}
+        ext = str(file_obj.get("ext") or "").casefold().lstrip(".")
+        url = str(file_obj.get("url") or "").strip()
+        if ext in VIDEO_EXTENSIONS and url:
+            return url
+        return None
+    url = str(post.get("file_url") or "").strip()
+    if not url:
+        return None
+    path = urllib.parse.urlparse(url).path
+    ext = path.rsplit(".", 1)[-1].casefold() if "." in path else ""
+    return url if ext in VIDEO_EXTENSIONS else None
+
+
+def canonical_post_url(source: str, post: Dict[str, Any]) -> str:
+    post_id = str(post.get("id") or "")
+    if source == "e621":
+        return f"https://e621.net/posts/{post_id}"
+    return f"https://rule34.xxx/index.php?page=post&s=view&id={post_id}"
+
+
+def _source_urls(source: str, post: Dict[str, Any]) -> List[str]:
+    values: List[str] = [canonical_post_url(source, post)]
+    if source == "e621":
+        raw = post.get("sources") or []
+        if isinstance(raw, str):
+            raw = [raw]
+    else:
+        raw_text = str(post.get("source") or "").strip()
+        raw = re.split(r"\s+", raw_text) if raw_text else []
+    for item in raw:
+        url = str(item or "").strip()
+        if url.startswith(("http://", "https://")) and url not in values:
+            values.append(url)
+        if len(values) >= 6:
+            break
+    return values
+
+
+def _date_only(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        value = value.get("s") or value.get("date") or value.get("created_at")
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if re.match(r"^\d{4}-\d{2}-\d{2}", text):
+        return text[:10]
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.date().isoformat()
+    except ValueError:
+        pass
+    try:
+        dt = email.utils.parsedate_to_datetime(text)
+        return dt.date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def post_metadata(source: str, post: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    tags: List[str] = []
+    artists: List[str] = []
+    characters: List[str] = []
+    if source == "e621":
+        typed = post.get("tags") or {}
+        if isinstance(typed, dict):
+            artists = [str(x) for x in (typed.get("artist") or []) if str(x).strip()]
+            characters = [str(x) for x in (typed.get("character") or []) if str(x).strip()]
