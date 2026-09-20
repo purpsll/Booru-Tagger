@@ -22,6 +22,22 @@
     );
   }
 
+  function isReviewCandidateUrl(url) {
+    const storedUrl = String(url || "").trim();
+    if (!storedUrl) return false;
+    try {
+      const parsed = new URL(storedUrl, window.location.origin);
+      if (!/^https?:$/i.test(parsed.protocol)) return false;
+      const fragment = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+      return (
+        fragment.has(REVIEW_CONFIDENCE_KEY) ||
+        isSupportedBooruUrl(storedUrl)
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   function parseReviewCandidate(url) {
     const storedUrl = String(url || "").trim();
     let displayUrl = storedUrl;
@@ -218,12 +234,12 @@
       return rendered;
     }
 
-    const supportedUrls = (image.urls || []).filter(isSupportedBooruUrl);
-    if (!supportedUrls.length) {
+    const reviewUrls = (image.urls || []).filter(isReviewCandidateUrl);
+    if (!reviewUrls.length) {
       return rendered;
     }
 
-    const candidate = parseReviewCandidate(supportedUrls[supportedUrls.length - 1]);
+    const candidate = parseReviewCandidate(reviewUrls[reviewUrls.length - 1]);
     const candidateUrl = candidate.storedUrl;
     return React.createElement(
       React.Fragment,

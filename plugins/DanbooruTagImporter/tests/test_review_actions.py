@@ -19,6 +19,10 @@ spec.loader.exec_module(plugin)
 
 CANDIDATE_URL = "https://danbooru.donmai.us/posts/12345"
 REVIEW_URL = CANDIDATE_URL + "#booru-importer-review-confidence=89.4"
+EXTERNAL_CANDIDATE_URL = "https://twitter.com/example/status/123456789"
+EXTERNAL_REVIEW_URL = (
+    EXTERNAL_CANDIDATE_URL + "#booru-importer-review-confidence=87.6"
+)
 
 class ReviewFakeStash:
     def __init__(self, image):
@@ -53,6 +57,9 @@ class ReviewFakeStash:
             },
         }
 
+    def image_bytes(self, image_id):
+        return b"review-image"
+
     def all_studios(self):
         return {}
 
@@ -67,6 +74,8 @@ class ReviewFakeStash:
         performer_ids=None,
         date=None,
         urls=None,
+        title=None,
+        photographer=None,
     ):
         self.updated.append(
             {
@@ -76,6 +85,8 @@ class ReviewFakeStash:
                 "performer_ids": list(performer_ids) if performer_ids is not None else None,
                 "date": date,
                 "urls": list(urls) if urls is not None else None,
+                "title": title,
+                "photographer": photographer,
             }
         )
 
@@ -185,6 +196,84 @@ class ReviewDecisionTests(unittest.TestCase):
         self.assertEqual(update["date"], "2025-01-02")
         # The approved candidate was already attached during Review and remains as source URL.
         self.assertIsNone(update["urls"])
+
+    def test_external_review_candidate_is_valid_and_active(self):
+        image = review_image()
+        image["urls"][-1] = EXTERNAL_REVIEW_URL
+        stash = ReviewFakeStash(image)
+
+        result = plugin.review_candidate_action(
+            stash,
+            {},
+            {
+                "action": "no",
+                "image_id": "42",
+                "candidate_url": EXTERNAL_REVIEW_URL,
+            },
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["candidate_url"], EXTERNAL_CANDIDATE_URL)
+        self.assertEqual(result["review_confidence"], 87.6)
+        self.assertEqual(
+            stash.updated[-1]["urls"],
+            ["https://example.com/user-url"],
+        )
+
+    def test_yes_external_candidate_rechecks_saucenao_and_imports_verified_metadata(self):
+        image = review_image()
+        image["urls"][-1] = EXTERNAL_REVIEW_URL
+        stash = ReviewFakeStash(image)
+        external_post = {
+            "id": "123456789",
+            "_saucenao_score": 87.6,
+            "_saucenao_external": True,
+            "_source_site": "Twitter",
+            "_source_url": EXTERNAL_CANDIDATE_URL,
+            "_source_title": "Example source title",
+            "_source_artists": ["example_creator"],
+            "_source_characters": [],
+            "_source_date": "2025-01-02T03:04:05Z",
+        }
+
+        with mock.patch.object(
+            plugin,
+            "_resolve_supported_booru_url",
+            return_value=None,
+        ), mock.patch.object(
+            plugin,
+            "saucenao_resolve",
+            return_value=("saucenao_external", external_post),
+        ) as sauce, mock.patch.object(
+            plugin,
+            "ensure_studio",
+            return_value={"id": "studio-1", "name": "example_creator"},
+        ):
+            result = plugin.review_candidate_action(
+                stash,
+                {"saucenao_api_key": "key"},
+                {
+                    "action": "yes",
+                    "image_id": "42",
+                    "candidate_url": EXTERNAL_REVIEW_URL,
+                },
+            )
+
+        self.assertEqual(result["status"], "imported")
+        self.assertEqual(result["candidate_url"], EXTERNAL_CANDIDATE_URL)
+        self.assertEqual(result["review_confidence"], 87.6)
+        sauce.assert_called_once()
+        update = stash.updated[-1]
+        self.assertIn("import-tag", update["tag_ids"])
+        self.assertNotIn("review-tag", update["tag_ids"])
+        self.assertEqual(update["studio_id"], "studio-1")
+        self.assertEqual(update["date"], "2025-01-02")
+        self.assertEqual(update["title"], "Example source title")
+        self.assertEqual(update["photographer"], "example_creator")
+        self.assertEqual(
+            update["urls"],
+            ["https://example.com/user-url", EXTERNAL_CANDIDATE_URL],
+        )
 
     def test_decision_rejects_a_non_active_supported_url(self):
         image = review_image()
@@ -316,6 +405,8 @@ class ReviewDecisionTests(unittest.TestCase):
         self.assertIn("Yes — import this source", ui)
         self.assertIn("No — mark No Match", ui)
         self.assertIn("Review confidence: ", ui)
+        self.assertIn("isReviewCandidateUrl", ui)
+        self.assertIn("fragment.has(REVIEW_CONFIDENCE_KEY)", ui)
         self.assertIn("85.0–92.9%", ui)
         self.assertIn("Not recorded — recheck this Review candidate to populate it.", ui)
         self.assertIn("runPluginOperation", ui)

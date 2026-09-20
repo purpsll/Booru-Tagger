@@ -4,7 +4,7 @@ Credentials / account identifiers plus the SauceNAO polling ceiling are user-con
 in Stash. Other operational presets live here so installations share the same policy.
 """
 
-VERSION = "3.26.21"
+VERSION = "3.26.22"
 PLUGIN_ID = "DanbooruTagImporter"
 USER_AGENT = f"stash-multibooru-tag-importer/{VERSION}"
 

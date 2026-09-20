@@ -115,7 +115,7 @@ class SauceNaoExternalSourceTests(unittest.TestCase):
         )
         self.assertFalse(plugin.can_mark_no_match([outcome]))
 
-    def test_review_band_external_hit_is_inconclusive_not_no_match(self):
+    def test_review_band_external_without_url_is_inconclusive_not_no_match(self):
         self.assertTrue(
             plugin._saucenao_strong_unsupported_is_inconclusive(
                 90.0,
@@ -131,6 +131,55 @@ class SauceNaoExternalSourceTests(unittest.TestCase):
             "strong visual match from unsupported source (90.0%)",
         )
         self.assertFalse(plugin.can_mark_no_match([outcome]))
+
+    def test_review_band_external_result_exposes_url_in_diagnostics(self):
+        source_url = "https://twitter.com/example/status/123456789"
+        payload = {
+            "header": {
+                "status": 0,
+                "short_limit": 10,
+                "short_remaining": 9,
+                "long_limit": 200,
+                "long_remaining": 199,
+            },
+            "results": [
+                {
+                    "header": {
+                        "similarity": "87.6",
+                        "index_id": 41,
+                        "index_name": "Index #41: Twitter - image.jpg",
+                    },
+                    "data": {
+                        "ext_urls": [source_url],
+                        "tweet_id": "123456789",
+                        "twitter_user_handle": "example_creator",
+                    },
+                }
+            ],
+        }
+        diagnostics = {}
+
+        with mock.patch.object(plugin, "_saucenao_wait_for_slot", return_value=0.0), \
+             mock.patch.object(plugin.HTTP, "urlopen", return_value=FakeResponse(payload)):
+            result = plugin.saucenao_resolve(
+                b"image",
+                "key",
+                93.0,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                diagnostics=diagnostics,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(diagnostics["best_similarity"], 87.6)
+        self.assertEqual(diagnostics["best_external_similarity"], 87.6)
+        self.assertEqual(diagnostics["best_external_url"], source_url)
 
     def test_konachan_match_fetches_authoritative_tags(self):
         sauce_payload = {

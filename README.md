@@ -70,7 +70,7 @@ SauceNAO results use the same one-decimal confidence value shown in the plugin l
 - **85.0–92.9% → Review**
 - **below 85.0% → not accepted as a SauceNAO match**
 
-A high-confidence SauceNAO result is no longer treated as **No Match** merely because it comes from a site outside the original four boorus. The plugin identifies the matched site from SauceNAO's index/source data and imports only metadata that can be verified. Yande.re and Konachan matches are resolved through their post APIs so their real source tags can also be imported. Other sites may be metadata-only when no reliable tag API is available. External-site results in the 85.0–92.9% Review band stay pending rather than being incorrectly persisted as No Match; the existing Yes/No Review workflow remains limited to sources that can be re-resolved with full metadata fidelity.
+A high-confidence SauceNAO result is no longer treated as **No Match** merely because it comes from a site outside the original four boorus. The plugin identifies the matched site from SauceNAO's index/source data and imports only metadata that can be verified. Yande.re and Konachan matches are resolved through their post APIs so their real source tags can also be imported. Other sites may be metadata-only when no reliable tag API is available. Any SauceNAO result in the **85.0–92.9% Review band** with a usable source URL now becomes `Multi-Booru Review`, including external sites. If SauceNAO has no inspectable source URL, the image remains Unresolved for a later retry.
 
 When an image is marked **`Multi-Booru Review`**, open that image's normal Stash image page.
 
@@ -85,7 +85,7 @@ Booru Importer displays:
 
 Choosing **Yes** confirms that the proposed source is correct.
 
-Booru Importer fetches that exact Danbooru, Gelbooru, Rule34, or e621 post and runs it through the **normal metadata importer**. That includes:
+For Danbooru, Gelbooru, Rule34, and e621, Booru Importer resolves that exact post directly. For an external SauceNAO candidate, it re-runs SauceNAO at the Review threshold and verifies that the same source URL is still the strongest qualifying result before importing its verified metadata. The normal metadata importer then applies:
 
 - source tags
 - Studio/artist handling
