@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import time
@@ -164,6 +165,98 @@ class E621PerImageRetryTests(unittest.TestCase):
         self.assertEqual(plugin._E621_IQDB_RECOVERY_INTERVAL_SECONDS, 4.0)
         plugin._e621_iqdb_note_success("user", "key")
         self.assertEqual(plugin._E621_IQDB_RECOVERY_INTERVAL_SECONDS, 0.0)
+
+
+    def test_eris_v2_file_search_is_requested_and_parsed(self):
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def read(self):
+                return json.dumps([{
+                    "hash": "deadbeef",
+                    "post_id": 123,
+                    "score": 84.5,
+                    "post": {
+                        "id": 123,
+                        "tags": {"general": ["tag_a"]},
+                        "file": {"ext": "jpg", "url": "https://static.example/123.jpg"},
+                    },
+                }]).encode("utf-8")
+
+        diagnostics = {}
+        with mock.patch.object(plugin, "_e621_iqdb_wait_for_slot"), \
+             mock.patch.object(plugin, "_e621_iqdb_note_success"), \
+             mock.patch.object(plugin.HTTP, "urlopen", return_value=Response()) as opener, \
+             mock.patch.object(plugin, "e621_post_by_id", return_value={
+                 "id": 123,
+                 "tags": {"general": ["tag_a"]},
+                 "file": {"ext": "jpg", "url": "https://static.example/123.jpg"},
+             }):
+            result = plugin.e621_iqdb(
+                b"jpeg-bytes", "user", "key", 60.0, diagnostics=diagnostics
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["_e621_iqdb_score"], 84.5)
+        self.assertEqual(
+            result["_e621_iqdb_candidate_url"], "https://e621.net/posts/123"
+        )
+        req = opener.call_args.args[0]
+        self.assertIn("v2=true", req.full_url)
+        self.assertIn(b'name="score_cutoff"', req.data)
+        self.assertIn(b"60.0", req.data)
+        self.assertEqual(diagnostics["best_post_id"], "123")
+        self.assertEqual(diagnostics["response_version"], "v2")
+
+    def test_eris_legacy_nested_post_shape_is_still_supported(self):
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def read(self):
+                return json.dumps([{
+                    "post_id": 456,
+                    "score": 91.0,
+                    "post": {
+                        "posts": {
+                            "id": 456,
+                            "tags": {"general": ["legacy_tag"]},
+                            "file": {"ext": "png", "url": "https://static.example/456.png"},
+                        }
+                    },
+                }]).encode("utf-8")
+
+        with mock.patch.object(plugin, "_e621_iqdb_wait_for_slot"), \
+             mock.patch.object(plugin, "_e621_iqdb_note_success"), \
+             mock.patch.object(plugin.HTTP, "urlopen", return_value=Response()), \
+             mock.patch.object(plugin, "e621_post_by_id", return_value={
+                 "id": 456,
+                 "tags": {"general": ["legacy_tag"]},
+                 "file": {"ext": "png", "url": "https://static.example/456.png"},
+             }):
+            result = plugin.e621_iqdb(b"image", "user", "key", 60.0)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 456)
+        self.assertEqual(result["_e621_iqdb_score"], 91.0)
+
+    def test_eris_review_band_becomes_review_candidate(self):
+        candidate = {
+            "id": 789,
+            "tags": {"general": ["candidate"]},
+            "file": {"ext": "jpg", "url": "https://static.example/789.jpg"},
+            "_e621_iqdb_score": 84.0,
+            "_e621_iqdb_candidate_url": "https://e621.net/posts/789",
+        }
+        with mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \
+             mock.patch.object(plugin, "ENABLE_SAUCENAO", False), \
+             mock.patch.object(plugin, "e621_iqdb", return_value=candidate):
+            result = self._process(25)
+
+        self.assertEqual(result, "review_candidate")
 
 
 if __name__ == "__main__":
