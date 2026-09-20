@@ -115,7 +115,7 @@ class SauceNaoExternalSourceTests(unittest.TestCase):
         )
         self.assertFalse(plugin.can_mark_no_match([outcome]))
 
-    def test_review_band_external_hit_is_inconclusive_not_no_match(self):
+    def test_review_band_external_without_url_is_inconclusive_not_no_match(self):
         self.assertTrue(
             plugin._saucenao_strong_unsupported_is_inconclusive(
                 90.0,
