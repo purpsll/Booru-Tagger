@@ -1034,6 +1034,8 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
     best_seen_similarity = 0.0
     best_supported_similarity = 0.0
     best_supported_url = ""
+    best_external_similarity = 0.0
+    best_external_url = ""
     for item in results:
         if not isinstance(item,dict): continue
         try:
@@ -1047,11 +1049,18 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
             if sim > best_supported_similarity:
                 best_supported_similarity = sim
                 best_supported_url = _saucenao_supported_candidate_url(data)
+        elif isinstance(data, dict):
+            external_url = _saucenao_external_url(data)
+            if external_url and sim > best_external_similarity:
+                best_external_similarity = sim
+                best_external_url = external_url
         if sim>=minimum_similarity: ranked.append((sim,data))
     if diagnostics is not None:
         diagnostics["best_similarity"] = best_seen_similarity
         diagnostics["best_supported_similarity"] = best_supported_similarity
         diagnostics["best_supported_url"] = best_supported_url
+        diagnostics["best_external_similarity"] = best_external_similarity
+        diagnostics["best_external_url"] = best_external_url
         diagnostics["candidate_count"] = len(results)
         diagnostics["minimum_similarity"] = minimum_similarity
     ranked.sort(key=lambda x:x[0],reverse=True)
@@ -3127,6 +3136,7 @@ def process_image(
 
     approved_source_url = str(approved_source_url or "").strip()
     if approved_source_url:
+        approved_source_url, _ = _review_candidate_parts(approved_source_url)
         resolved = _resolve_supported_booru_url(
             approved_source_url,
             danbooru_login=danbooru_login,
@@ -3138,6 +3148,34 @@ def process_image(
             e621_username=e621_username,
             e621_api_key=e621_api_key,
         )
+        if not resolved:
+            if not saucenao_api_key:
+                raise RuntimeError(
+                    "The approved external Review candidate requires SauceNAO, but no API key is configured"
+                )
+            _, review_floor, _ = _saucenao_thresholds(settings)
+            review_diag: Dict[str, Any] = {}
+            resolved = saucenao_resolve(
+                stash.image_bytes(iid),
+                saucenao_api_key,
+                review_floor,
+                danbooru_login,
+                danbooru_api_key,
+                gelbooru_api_key,
+                gelbooru_user_id,
+                rule34_api_key,
+                rule34_user_id,
+                e621_username,
+                e621_api_key,
+                saucenao_requests_per_30_seconds,
+                diagnostics=review_diag,
+            )
+            if resolved:
+                resolved_url = source_post_url(resolved[0], resolved[1]) or ""
+                if _canonical_url_key(resolved_url) != _canonical_url_key(approved_source_url):
+                    raise RuntimeError(
+                        "The approved external Review candidate is no longer SauceNAO's current best qualifying source"
+                    )
         if not resolved:
             raise RuntimeError("The approved Review candidate could not be resolved from its source site")
         source, post = resolved
@@ -3439,88 +3477,119 @@ def process_image(
             best_supported_url = str(
                 saucenao_diag.get("best_supported_url") or ""
             ).strip()
+            best_external_similarity = float(
+                saucenao_diag.get("best_external_similarity", 0.0) or 0.0
+            )
+            best_external_url = str(
+                saucenao_diag.get("best_external_url") or ""
+            ).strip()
 
-            strong_unsupported = (
+            # Pick the strongest review-band candidate with an inspectable source URL,
+            # regardless of whether it came from one of the four directly supported
+            # boorus or another SauceNAO index.
+            review_options: List[Tuple[float, str, str]] = []
+            if (
+                saucenao_review_min
+                <= best_supported_similarity
+                < saucenao_auto_accept
+                and best_supported_url
+            ):
+                review_options.append(
+                    (best_supported_similarity, best_supported_url, "supported")
+                )
+            if (
+                saucenao_review_min
+                <= best_external_similarity
+                < saucenao_auto_accept
+                and best_external_url
+            ):
+                review_options.append(
+                    (best_external_similarity, best_external_url, "external")
+                )
+
+            if (
                 post is None
                 and saucenao_outcome.status == LookupStatus.MISS
-                and _saucenao_strong_unsupported_is_inconclusive(
-                    best_similarity,
-                    best_supported_similarity,
-                    saucenao_review_min,
+                and not saucenao_accept_review
+                and review_options
+            ):
+                review_candidate_score, review_candidate_url, review_kind = max(
+                    review_options, key=lambda item: item[0]
                 )
-            )
-            if strong_unsupported:
-                # SauceNAO found a visually strong result, but it belongs to a
-                # source this importer cannot resolve into trusted booru metadata.
-                # That is inconclusive, not an authoritative miss, so keep the
-                # image pending instead of writing Multi-Booru No Match.
-                outcomes.append(
-                    LookupOutcome(
-                        "SauceNAO",
-                        "visual",
-                        LookupStatus.UNAVAILABLE,
-                        None,
-                        (
-                            "strong visual match from unsupported source "
-                            f"({best_similarity:.1f}%)"
-                        ),
-                    )
-                )
-                _metric(metrics, "saucenao_unsupported_results")
+                outcomes.append(saucenao_outcome)
+                _metric(metrics, "saucenao_review_candidates")
+                _metric(metrics, "saucenao_review_band_matches")
+                if review_kind == "external":
+                    _metric(metrics, "saucenao_unsupported_results")
                 decision_details.append(
-                    f"SauceNAO: strong unsupported visual result "
-                    f"{best_similarity:.1f}%; keeping image pending"
+                    f"SauceNAO: {review_kind} review candidate "
+                    f"{review_candidate_score:.1f}% not auto-accepted "
+                    f"(HIGH starts at {saucenao_auto_accept:.1f}%)"
                 )
             else:
-                outcomes.append(saucenao_outcome)
-
-            if strong_unsupported:
-                pass
-            elif saucenao_outcome.matched:
-                sauce_source, sauce_post = saucenao_outcome.value
-                score = float(
-                    sauce_post.get("_saucenao_score", best_similarity) or 0.0
-                )
-                confidence = _visual_confidence(
-                    score, saucenao_auto_accept, saucenao_review_min
-                )
-                if confidence == "REVIEW":
-                    _metric(metrics, "saucenao_review_band_matches")
-                if post is None:
-                    source, post, match_method = (
-                        sauce_source, sauce_post, "saucenao"
-                    )
-                    decision_details.append(
-                        f"SauceNAO: match {score:.1f}% ({confidence})"
-                    )
-                else:
-                    decision_details.append(
-                        f"SauceNAO: match {score:.1f}% ({confidence}; "
-                        "e621 IQDB retained by priority)"
-                    )
-            elif saucenao_outcome.status == LookupStatus.MISS:
-                if 0 < best_supported_similarity < saucenao_review_min:
-                    _metric(metrics, "saucenao_below_threshold")
-                elif best_supported_similarity <= 0 < best_similarity:
-                    _metric(metrics, "saucenao_unsupported_results")
-                elif best_similarity <= 0:
-                    _metric(metrics, "saucenao_no_results")
-                if (
+                strong_unsupported = (
                     post is None
-                    and not saucenao_accept_review
-                    and saucenao_review_min
-                    <= best_supported_similarity
-                    < saucenao_auto_accept
-                ):
-                    review_candidate_score = best_supported_similarity
-                    review_candidate_url = best_supported_url
-                    _metric(metrics, "saucenao_review_candidates")
+                    and saucenao_outcome.status == LookupStatus.MISS
+                    and _saucenao_strong_unsupported_is_inconclusive(
+                        best_similarity,
+                        best_supported_similarity,
+                        saucenao_review_min,
+                    )
+                )
+                if strong_unsupported:
+                    # A review-band external result with no usable source URL remains
+                    # pending because the user has nothing concrete to inspect.
+                    outcomes.append(
+                        LookupOutcome(
+                            "SauceNAO",
+                            "visual",
+                            LookupStatus.UNAVAILABLE,
+                            None,
+                            (
+                                "strong visual match from unsupported source "
+                                f"({best_similarity:.1f}%)"
+                            ),
+                        )
+                    )
+                    _metric(metrics, "saucenao_unsupported_results")
                     decision_details.append(
-                        f"SauceNAO: supported review candidate "
-                        f"{best_supported_similarity:.1f}% not auto-accepted "
-                        f"(HIGH starts at {saucenao_auto_accept:.1f}%)"
+                        f"SauceNAO: strong unsupported visual result "
+                        f"{best_similarity:.1f}% with no usable source URL; keeping image pending"
                     )
                 else:
+                    outcomes.append(saucenao_outcome)
+
+                if strong_unsupported:
+                    pass
+                elif saucenao_outcome.matched:
+                    sauce_source, sauce_post = saucenao_outcome.value
+                    score = float(
+                        sauce_post.get("_saucenao_score", best_similarity) or 0.0
+                    )
+                    confidence = _visual_confidence(
+                        score, saucenao_auto_accept, saucenao_review_min
+                    )
+                    if confidence == "REVIEW":
+                        _metric(metrics, "saucenao_review_band_matches")
+                    if post is None:
+                        source, post, match_method = (
+                            sauce_source, sauce_post, "saucenao"
+                        )
+                        decision_details.append(
+                            f"SauceNAO: match {score:.1f}% ({confidence})"
+                        )
+                    else:
+                        decision_details.append(
+                            f"SauceNAO: match {score:.1f}% ({confidence}; "
+                            "e621 IQDB retained by priority)"
+                        )
+                elif saucenao_outcome.status == LookupStatus.MISS:
+                    if 0 < best_supported_similarity < saucenao_review_min:
+                        _metric(metrics, "saucenao_below_threshold")
+                    elif best_supported_similarity <= 0 < best_similarity:
+                        _metric(metrics, "saucenao_unsupported_results")
+                    elif best_similarity <= 0:
+                        _metric(metrics, "saucenao_no_results")
                     decision_details.append(
                         "SauceNAO: no qualifying supported result"
                         + (
@@ -3532,21 +3601,21 @@ def process_image(
                             )
                         )
                     )
-            else:
-                decision_details.append(
-                    f"SauceNAO: {saucenao_outcome.status.value}"
-                    + (
-                        f" ({saucenao_outcome.detail})"
-                        if saucenao_outcome.detail else ""
+                else:
+                    decision_details.append(
+                        f"SauceNAO: {saucenao_outcome.status.value}"
+                        + (
+                            f" ({saucenao_outcome.detail})"
+                            if saucenao_outcome.detail else ""
+                        )
                     )
-                )
-                sauce_detail = str(
-                    saucenao_outcome.detail or saucenao_outcome.status.value
-                )
-                # 52x outages are already announced once by _saucenao_note_outage.
-                # Keep the per-image Retry Later result at INFO without another warning.
-                if not re.search(r"HTTP (?:500|52[0-4])", sauce_detail):
-                    _log_lookup_problem_once("SauceNAO", sauce_detail)
+                    sauce_detail = str(
+                        saucenao_outcome.detail or saucenao_outcome.status.value
+                    )
+                    # 52x outages are already announced once by _saucenao_note_outage.
+                    # Keep the per-image Retry Later result at INFO without another warning.
+                    if not re.search(r"HTTP (?:500|52[0-4])", sauce_detail):
+                        _log_lookup_problem_once("SauceNAO", sauce_detail)
 
     if post is None:
         if review_candidate_score > 0:
@@ -4080,6 +4149,32 @@ def _is_supported_booru_url(url: str) -> bool:
     )
 
 
+def _is_review_candidate_url(url: str) -> bool:
+    """Accept plugin-created external Review URLs plus legacy supported booru URLs."""
+    text = str(url or "").strip()
+    if not text:
+        return False
+    canonical, confidence = _review_candidate_parts(text)
+    parts = urllib.parse.urlsplit(canonical)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return False
+    return confidence is not None or _is_supported_booru_url(canonical)
+
+
+def _canonical_url_key(url: str) -> str:
+    canonical, _ = _review_candidate_parts(url)
+    parts = urllib.parse.urlsplit(str(canonical or "").strip())
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme.casefold(),
+            parts.netloc.casefold(),
+            parts.path.rstrip("/"),
+            parts.query,
+            "",
+        )
+    )
+
+
 def review_candidate_action(
     stash: Stash,
     settings: Dict[str, Any],
@@ -4095,8 +4190,8 @@ def review_candidate_action(
         raise RuntimeError("Review decision is missing image_id")
     if action not in {"yes", "no"}:
         raise RuntimeError("Review decision action must be 'yes' or 'no'")
-    if not candidate_url or not _is_supported_booru_url(candidate_source_url):
-        raise RuntimeError("Review decision is missing a supported booru candidate URL")
+    if not candidate_url or not _is_review_candidate_url(candidate_url):
+        raise RuntimeError("Review decision is missing a valid candidate source URL")
 
     image = stash.find_image(image_id)
     if not image:
@@ -4109,12 +4204,12 @@ def review_candidate_action(
         for url in (image.get("urls") or [])
         if str(url).strip()
     ]
-    supported_review_urls = [
-        url for url in current_urls if _is_supported_booru_url(url)
+    review_urls = [
+        url for url in current_urls if _is_review_candidate_url(url)
     ]
-    if not supported_review_urls:
-        raise RuntimeError("This Review image no longer has a supported booru candidate URL")
-    expected_candidate_url = supported_review_urls[-1]
+    if not review_urls:
+        raise RuntimeError("This Review image no longer has an active candidate URL")
+    expected_candidate_url = review_urls[-1]
     if candidate_url.casefold() != expected_candidate_url.casefold():
         raise RuntimeError("The proposed Review candidate URL is no longer the active candidate for this image")
 
