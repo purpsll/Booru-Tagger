@@ -3792,12 +3792,12 @@ def process_image(
         if approved_canonical_url:
             normalized_urls: List[str] = []
             seen_urls: set[str] = set()
-            approved_storage_key = approved_source_url.casefold()
-            approved_canonical_key = approved_canonical_url.casefold()
+            approved_canonical_key = _canonical_url_key(approved_canonical_url)
             for existing_url in current_urls:
+                existing_canonical, _ = _review_candidate_parts(existing_url)
                 candidate = (
                     approved_canonical_url
-                    if existing_url.casefold() == approved_storage_key
+                    if _canonical_url_key(existing_canonical) == approved_canonical_key
                     else existing_url
                 )
                 key = candidate.casefold()
@@ -3805,7 +3805,7 @@ def process_image(
                     continue
                 seen_urls.add(key)
                 normalized_urls.append(candidate)
-            if approved_canonical_key not in seen_urls:
+            if approved_canonical_url.casefold() not in seen_urls:
                 normalized_urls.append(approved_canonical_url)
             current_urls = normalized_urls
     current_url_keys = {u.casefold() for u in current_urls}
