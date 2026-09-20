@@ -14,6 +14,11 @@ It can add:
 
 It does **not** replace or download your image files, and normal user-created Stash metadata is preserved wherever possible.
 
+### Separate video plugin
+
+This repository also contains **Booru Video Importer**, a separate Stash scene/video plugin. It does not share the image importer's queues or workflow tags. The video plugin can extract representative frames, locate e621/Rule34 candidates, verify the actual candidate video across multiple perceptual frame hashes, and then import authoritative scene metadata.
+
+
 > Back up your Stash database before making large bulk metadata changes.
 
 ---
