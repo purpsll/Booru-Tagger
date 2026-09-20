@@ -1,10 +1,10 @@
-# Booru Importer v3.26.20
+# Booru Importer v3.26.21
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.20 keeps the displayed SauceNAO automatic-import threshold at 94.0% and fixes two Deep Match edge cases: oversized Stash thumbnail fallbacks are resized before SauceNAO upload, and a high-confidence SauceNAO hit from an external source is no longer misclassified as No Match. High-confidence external matches now import verified source metadata; Yande.re and Konachan are additionally resolved through their post APIs so their authoritative tags can be imported.
+v3.26.21 lowers the displayed SauceNAO automatic-import threshold to 93.0%. v3.26.20 fixed two Deep Match edge cases: oversized Stash thumbnail fallbacks are resized before SauceNAO upload, and a high-confidence SauceNAO hit from an external source is no longer misclassified as No Match. High-confidence external matches now import verified source metadata; Yande.re and Konachan are additionally resolved through their post APIs so their authoritative tags can be imported.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -69,7 +69,7 @@ Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and 
 Results:
 
 - accepted match -> `Multi-Booru Imported`
-- SauceNAO supported candidate at 85.0–93.9% -> `Multi-Booru Review`
+- SauceNAO supported candidate at 85.0–92.9% -> `Multi-Booru Review`
 - authoritative miss across all active stages -> `Multi-Booru No Match`
 - temporary/provider failure -> current state is retained for a later retry
 
@@ -109,8 +109,8 @@ State transitions remove the old plugin status marker without removing ordinary 
 - pHash winner margin: 1
 - Danbooru IQDB minimum: 95%
 - e621 IQDB minimum: 90%
-- SauceNAO HIGH: >=94.0% using the same one-decimal similarity displayed to the user (for example, raw 93.96 → displayed 94.0 → HIGH)
-- SauceNAO REVIEW: 85.0–93.9%
+- SauceNAO HIGH: >=93.0% using the same one-decimal similarity displayed to the user (for example, raw 92.96 → displayed 93.0 → HIGH)
+- SauceNAO REVIEW: 85.0–92.9%
 - SauceNAO REVIEW auto-accept: off
 - SauceNAO polling: adaptive to the account-reported `short_limit` (roughly a 30-second quota window); optional user ceiling via **SauceNAO searches per 30 seconds**
 - SauceNAO long-term quota: account-reported `long_limit` / `long_remaining` is tracked so exhausted accounts do not produce false No Match results

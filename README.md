@@ -66,11 +66,11 @@ The plugin also includes:
 
 SauceNAO results use the same one-decimal confidence value shown in the plugin logs and image Review panel:
 
-- **94.0% or higher → automatically imported**
-- **85.0–93.9% → Review**
+- **93.0% or higher → automatically imported**
+- **85.0–92.9% → Review**
 - **below 85.0% → not accepted as a SauceNAO match**
 
-A high-confidence SauceNAO result is no longer treated as **No Match** merely because it comes from a site outside the original four boorus. The plugin identifies the matched site from SauceNAO's index/source data and imports only metadata that can be verified. Yande.re and Konachan matches are resolved through their post APIs so their real source tags can also be imported. Other sites may be metadata-only when no reliable tag API is available. External-site results in the 85.0–93.9% Review band stay pending rather than being incorrectly persisted as No Match; the existing Yes/No Review workflow remains limited to sources that can be re-resolved with full metadata fidelity.
+A high-confidence SauceNAO result is no longer treated as **No Match** merely because it comes from a site outside the original four boorus. The plugin identifies the matched site from SauceNAO's index/source data and imports only metadata that can be verified. Yande.re and Konachan matches are resolved through their post APIs so their real source tags can also be imported. Other sites may be metadata-only when no reliable tag API is available. External-site results in the 85.0–92.9% Review band stay pending rather than being incorrectly persisted as No Match; the existing Yes/No Review workflow remains limited to sources that can be re-resolved with full metadata fidelity.
 
 When an image is marked **`Multi-Booru Review`**, open that image's normal Stash image page.
 

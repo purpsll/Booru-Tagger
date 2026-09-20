@@ -4,7 +4,7 @@ Credentials / account identifiers plus the SauceNAO polling ceiling are user-con
 in Stash. Other operational presets live here so installations share the same policy.
 """
 
-VERSION = "3.26.20"
+VERSION = "3.26.21"
 PLUGIN_ID = "DanbooruTagImporter"
 USER_AGENT = f"stash-multibooru-tag-importer/{VERSION}"
 
@@ -58,10 +58,10 @@ DEEP_VISUAL_MAX_WORKERS = 2
 # to the original image. Bound those rare fallback payloads before upload.
 VISUAL_SEARCH_MAX_DIMENSION = 640
 VISUAL_SEARCH_MAX_UPLOAD_BYTES = 1_000_000
-SAUCENAO_HIGH_CONFIDENCE = 94.0
+SAUCENAO_HIGH_CONFIDENCE = 93.0
 SAUCENAO_REVIEW_MINIMUM = 85.0
 # REVIEW-band results are deliberately review-only. This prevents a stale Stash
-# setting from silently auto-importing an 85.0-93.9% visual match.
+# setting from silently auto-importing an 85.0-92.9% visual match.
 SAUCENAO_ACCEPT_REVIEW_BAND = False
 # SauceNAO reports account-specific short-term (roughly 30-second) and long-term
 # quotas in each JSON response. 0 means auto-detect the account allowance after

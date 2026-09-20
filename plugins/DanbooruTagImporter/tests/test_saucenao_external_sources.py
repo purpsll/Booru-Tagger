@@ -95,7 +95,7 @@ class SauceNaoExternalSourceTests(unittest.TestCase):
             result = plugin.saucenao_resolve(
                 b"image",
                 "key",
-                94.0,
+                93.0,
                 "",
                 "",
                 "",
@@ -177,7 +177,7 @@ class SauceNaoExternalSourceTests(unittest.TestCase):
             result = plugin.saucenao_resolve(
                 b"image",
                 "key",
-                94.0,
+                93.0,
                 "",
                 "",
                 "",
