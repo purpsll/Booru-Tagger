@@ -352,7 +352,9 @@ def _rule34_tag_types(
         if isinstance(rows, dict):
             rows = [rows]
         if not isinstance(rows, list):
-            continue
+            rows = []
+
+        seen: set[str] = set()
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -361,8 +363,54 @@ def _rule34_tag_types(
                 continue
             try:
                 result[name] = int(row.get("type"))
+                seen.add(name.casefold())
             except (TypeError, ValueError):
                 continue
+
+        # Rule34's DAPI does not consistently honor the multi-name parameter.
+        # Fall back to a bounded number of single-tag lookups so one post cannot
+        # fan out into an unbounded request storm.
+        missing = [name for name in chunk if name.casefold() not in seen]
+        for name in missing[:20]:
+            _LAST_RULE34 = _wait(_LAST_RULE34, 1.0)
+            single_query = {
+                "page": "dapi",
+                "s": "tag",
+                "q": "index",
+                "json": "1",
+                "name": name,
+                "limit": "1",
+                "api_key": api_key,
+                "user_id": user_id,
+            }
+            try:
+                single_payload = _json_request(
+                    f"{RULE34_API}?{urllib.parse.urlencode(single_query)}",
+                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                )
+            except Exception:
+                break
+            single_rows = (
+                single_payload
+                if isinstance(single_payload, list)
+                else single_payload.get("tag")
+                if isinstance(single_payload, dict)
+                else None
+            )
+            if isinstance(single_rows, dict):
+                single_rows = [single_rows]
+            if not isinstance(single_rows, list):
+                continue
+            for row in single_rows:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("name") or "").casefold() != name.casefold():
+                    continue
+                try:
+                    result[name] = int(row.get("type"))
+                except (TypeError, ValueError):
+                    pass
+                break
     return result
 
 
