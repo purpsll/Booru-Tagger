@@ -562,7 +562,7 @@ class PluginSafetyTests(unittest.TestCase):
         with mock.patch.object(plugin.HTTP, "urlopen", return_value=JsonResponse()), \
              mock.patch.object(plugin, "danbooru_post_by_id", return_value=resolved_post):
             result = plugin.saucenao_resolve(
-                b"image", "key", 94.0, "", "", "", "", "", "",
+                b"image", "key", 93.0, "", "", "", "", "", "",
                 diagnostics=diagnostics, requests_per_30_seconds=0.0,
             )
 
@@ -596,7 +596,7 @@ class PluginSafetyTests(unittest.TestCase):
         diagnostics = {}
         with mock.patch.object(plugin.HTTP, "urlopen", return_value=JsonResponse()):
             result = plugin.saucenao_resolve(
-                b"image", "key", 94.0, "", "", "", "", "", "",
+                b"image", "key", 93.0, "", "", "", "", "", "",
                 diagnostics=diagnostics, requests_per_30_seconds=0.0,
             )
 
