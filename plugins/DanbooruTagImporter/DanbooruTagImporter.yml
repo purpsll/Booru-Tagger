@@ -1,8 +1,8 @@
 name: Booru Importer
-description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e621, and high-confidence SauceNAO sources. Fast Scan handles exact matches; Deep Match uses bandwidth-efficient visual search and imports authoritative source metadata.
-version: 3.26.22
+description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e621, and high-confidence SauceNAO sources. Fast Scan handles exact matches; Deep Match uses current e621 ERIS reverse search plus SauceNAO and imports authoritative source metadata.
+version: 3.26.23
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
-# e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=3s, anonymous uploads at >=65s, with adaptive post-429 backoff.
+# e621 ERIS policy: current v2 file-upload search is requested explicitly. >=90.0% may auto-import; 60.0-89.9% becomes Review. Transient failures are image-local; authenticated uploads are paced at >=3s and anonymous uploads at >=65s.
 # SauceNAO review policy: >=93.0% auto-import; 85.0-92.9% candidates with a usable source URL enter Review, including external SauceNAO sources. Review-band hits without a usable URL remain pending. Similarity is normalized to one decimal before threshold comparison so any score displayed as 93.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page.
 # Yes resolves the exact proposed source and imports through the normal metadata path; No removes that candidate URL and writes Multi-Booru No Match.
 # Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp and third-party_edit are ignored as artist metadata.
