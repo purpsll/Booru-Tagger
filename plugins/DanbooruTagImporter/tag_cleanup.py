@@ -144,6 +144,63 @@ class _UnionFind:
             self.parent[b] = a
 
 
+def native_merge_alias_preflight(
+    tags: Sequence[Dict[str, Any]],
+    candidate: TagCleanupCandidate,
+) -> Tuple[Dict[str, Tuple[str, ...]], Tuple[Tuple[str, str], ...]]:
+    """Find alias rows that would make Stash v0.31.1 tagsMerge fail.
+
+    Stash inserts each source tag name into tag_aliases before moving source
+    aliases. The alias column is globally UNIQUE. An alias already owned by a
+    tag inside this same merge group can be removed temporarily because the
+    native merge immediately recreates the source name on the destination.
+    An alias owned by an unrelated tag is a semantic conflict and must block
+    unattended merging.
+    """
+    tags_by_id = {
+        str(tag.get("id") or ""): tag
+        for tag in tags
+        if str(tag.get("id") or "")
+    }
+    group_ids = {
+        str(candidate.destination_id),
+        *[str(tag_id) for tag_id in candidate.source_ids],
+    }
+
+    alias_owners: Dict[str, str] = {}
+    for tag in tags:
+        tag_id = str(tag.get("id") or "")
+        for alias in tag.get("aliases") or []:
+            key = str(alias or "").casefold().strip()
+            if key:
+                alias_owners[key] = tag_id
+
+    removals: Dict[str, set] = {}
+    conflicts: List[Tuple[str, str]] = []
+    for source_id in candidate.source_ids:
+        source = tags_by_id.get(str(source_id)) or {}
+        source_name = str(source.get("name") or "").strip()
+        if not source_name:
+            continue
+        key = source_name.casefold()
+        owner_id = alias_owners.get(key)
+        if not owner_id:
+            continue
+        if owner_id in group_ids:
+            removals.setdefault(owner_id, set()).add(key)
+        else:
+            owner = tags_by_id.get(owner_id) or {}
+            conflicts.append((source_name, str(owner.get("name") or owner_id)))
+
+    return (
+        {
+            owner_id: tuple(sorted(keys))
+            for owner_id, keys in removals.items()
+        },
+        tuple(conflicts),
+    )
+
+
 def build_tag_cleanup_plan(
     tags: Sequence[Dict[str, Any]],
     *,
