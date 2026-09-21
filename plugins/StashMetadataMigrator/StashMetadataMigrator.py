@@ -251,6 +251,7 @@ class MigrationEngine:
             "merged_duplicate_studios": 0,
             "gallery_chapters_created": 0,
             "scene_markers_created": 0,
+            "scene_markers_updated": 0,
             "image_o_increments": 0,
             "unresolved_galleries": 0,
             "ambiguous_galleries": 0,
@@ -1232,6 +1233,79 @@ class MigrationEngine:
             if resolved:
                 ids.append(resolved)
         return _unique_ids(ids)
+
+    def _restore_scene_markers(
+        self,
+        old: Mapping[str, Any],
+        current: Mapping[str, Any],
+    ) -> bool:
+        changed = False
+        existing = list(current.get("scene_markers") or [])
+        for marker in old.get("markers") or []:
+            title = str(marker.get("title") or "").strip()
+            seconds = _clean_float(marker.get("seconds"))
+            if not title or seconds is None:
+                continue
+            primary_name = str(marker.get("primary_tag") or "").strip()
+            primary_id = self.resolve_tag(primary_name) if primary_name else None
+            if not primary_id or primary_id.startswith("DRYRUN:"):
+                continue
+
+            tag_ids: List[str] = []
+            for tag_name in marker.get("tags") or []:
+                tag_id = self.resolve_tag(str(tag_name))
+                if tag_id and not tag_id.startswith("DRYRUN:"):
+                    tag_ids.append(tag_id)
+            tag_ids.append(primary_id)
+            tag_ids = _unique_ids(tag_ids)
+
+            current_marker = next(
+                (
+                    item for item in existing
+                    if normalize_name(str(item.get("title") or "")) == normalize_name(title)
+                    and abs(float(item.get("seconds") or 0.0) - float(seconds)) < 0.001
+                ),
+                None,
+            )
+            end_seconds = _clean_float(marker.get("end_seconds"))
+            if current_marker is None:
+                self.stats["scene_markers_created"] += 1
+                changed = True
+                if not self.dry_run:
+                    created = self.stash.create_scene_marker({
+                        "title": title,
+                        "seconds": seconds,
+                        "end_seconds": end_seconds,
+                        "scene_id": str(current["id"]),
+                        "primary_tag_id": primary_id,
+                        "tag_ids": tag_ids,
+                    })
+                    existing.append(created)
+                continue
+
+            existing_tag_ids = [
+                str(tag.get("id"))
+                for tag in (current_marker.get("tags") or [])
+                if tag.get("id")
+            ]
+            current_primary = current_marker.get("primary_tag") or {}
+            current_primary_id = str(current_primary.get("id") or "")
+            merged_tags = _unique_ids(
+                existing_tag_ids
+                + tag_ids
+                + ([current_primary_id] if current_primary_id else [])
+            )
+            update: Dict[str, Any] = {"id": str(current_marker["id"])}
+            if merged_tags != existing_tag_ids:
+                update["tag_ids"] = merged_tags
+            if current_marker.get("end_seconds") is None and end_seconds is not None:
+                update["end_seconds"] = end_seconds
+            if len(update) > 1:
+                self.stats["scene_markers_updated"] += 1
+                changed = True
+                if not self.dry_run:
+                    self.stash.update_scene_marker(update)
+        return changed
 
     def restore_scene(self, old: Dict[str, Any], current: Dict[str, Any]) -> bool:
         input_data: Dict[str, Any] = {"id": str(current["id"])}
