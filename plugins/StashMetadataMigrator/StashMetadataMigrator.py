@@ -1524,13 +1524,115 @@ class MigrationEngine:
                 self.stash.increment_image_o(str(current["id"]), o_delta)
         return changed
 
+    def _preflight_media_and_infer_galleries(self) -> Dict[str, int]:
+        summary = {
+            "matched": 0,
+            "unmatched": 0,
+            "ambiguous": 0,
+            "collisions": 0,
+        }
+        gallery_evidence: Dict[str, List[set]] = {}
+        used_scene_targets = set()
+        used_image_targets = set()
+
+        def inspect(
+            old_items: Sequence[Dict[str, Any]],
+            current_by_id: Mapping[str, Dict[str, Any]],
+            fp_index,
+            path_index,
+            used_targets: set,
+        ) -> None:
+            for old in old_items:
+                match = match_old_media(
+                    old.get("files") or [],
+                    self.old_files,
+                    fp_index,
+                    path_index,
+                )
+                if not match.object_id:
+                    summary["ambiguous" if match.kind == "ambiguous" else "unmatched"] += 1
+                    continue
+                if match.object_id in used_targets:
+                    summary["collisions"] += 1
+                    continue
+                used_targets.add(match.object_id)
+                summary["matched"] += 1
+                current = current_by_id.get(str(match.object_id)) or {}
+                current_gallery_ids = {
+                    str(gallery.get("id") or "")
+                    for gallery in (current.get("galleries") or [])
+                    if str(gallery.get("id") or "")
+                }
+                if not current_gallery_ids:
+                    continue
+                for ref in old.get("galleries") or []:
+                    if not isinstance(ref, dict):
+                        continue
+                    relation_key = self._gallery_relation_key(ref)
+                    if relation_key:
+                        gallery_evidence.setdefault(relation_key, []).append(set(current_gallery_ids))
+
+        inspect(
+            self.old_scenes,
+            self.scenes_by_id,
+            self.scene_fp_index,
+            self.scene_path_index,
+            used_scene_targets,
+        )
+        inspect(
+            self.old_images,
+            self.images_by_id,
+            self.image_fp_index,
+            self.image_path_index,
+            used_image_targets,
+        )
+
+        for relation_key, evidence_sets in gallery_evidence.items():
+            if not evidence_sets:
+                continue
+            intersection = set.intersection(*evidence_sets)
+            if len(intersection) == 1:
+                self.inferred_gallery_map[relation_key] = next(iter(intersection))
+
+        total = len(self.old_scenes) + len(self.old_images)
+        if total:
+            rate = summary["matched"] / total
+            log(
+                "INFO",
+                f"Preflight media identity: {summary['matched']}/{total} uniquely matched "
+                f"({rate * 100:.1f}%); {summary['unmatched']} unmatched, "
+                f"{summary['ambiguous']} ambiguous, {summary['collisions']} source-target collision(s).",
+            )
+            if self.inferred_gallery_map:
+                log(
+                    "INFO",
+                    f"Inferred {len(self.inferred_gallery_map)} changed-path Gallery mapping(s) "
+                    "from consistent matched-media relationships.",
+                )
+            if not self.dry_run and total >= 100 and rate < 0.70:
+                raise RuntimeError(
+                    "Restore aborted before making changes: fewer than 70% of old media records "
+                    "match uniquely to this Stash. This usually means the wrong export/library "
+                    "was selected or the new Stash has not finished scanning."
+                )
+        return summary
+
     def run(self) -> Dict[str, int]:
         mode = "ANALYZE" if self.dry_run else "RESTORE"
         log(
             "INFO",
             f"{mode}: old export has {len(self.old_scenes)} scene JSON file(s), "
-            f"{len(self.old_images)} image JSON file(s), and {len(self.old_files)} file record(s).",
+            f"{len(self.old_images)} image JSON file(s), {len(self.old_galleries)} gallery JSON file(s), "
+            f"{len(self.old_groups)} group JSON file(s), and {len(self.old_files)} file record(s).",
         )
+
+        self._preflight_media_and_infer_galleries()
+        if not self.dry_run:
+            log("INFO", "Creating automatic Stash database backup before migration changes...")
+            self.stash.backup_database()
+            log("INFO", "Database backup completed successfully.")
+
+        self.prepare_metadata_entities()
 
         total = len(self.old_scenes) + len(self.old_images)
         done = 0
@@ -1601,11 +1703,23 @@ class MigrationEngine:
             f"{self.stats['ambiguous_scenes'] + self.stats['ambiguous_images']} ambiguous, "
             f"{self.stats['errors']} error(s).",
         )
+        log(
+            "INFO",
+            f"Entity/relationship summary: safe duplicate merges "
+            f"Tags={self.stats['merged_duplicate_tags']}, "
+            f"Performers={self.stats['merged_duplicate_performers']}, "
+            f"Studios={self.stats['merged_duplicate_studios']}; "
+            f"Galleries reused/created={self.stats['reused_galleries']}/{self.stats['created_galleries']}; "
+            f"Groups reused/created={self.stats['reused_groups']}/{self.stats['created_groups']}; "
+            f"Gallery chapters={self.stats['gallery_chapters_created']}; "
+            f"Scene markers created/updated={self.stats['scene_markers_created']}/{self.stats['scene_markers_updated']}.",
+        )
         if self.dry_run:
             log(
                 "INFO",
                 "No changes were made. Restore will update only already-existing matched "
-                "Scenes/Images; it never creates media records.",
+                "Scenes/Images; metadata-only Groups/user Galleries may be created, while "
+                "file-backed Galleries must resolve safely. Scene/Image/File records are never created.",
             )
         return self.stats
 
