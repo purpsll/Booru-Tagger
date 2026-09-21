@@ -119,7 +119,11 @@ def decide_entity_match(
         if len(compact_hits) > 1:
             return EntityDecision(None, True, "multiple formatting-equivalent matches")
 
-    if not allow_fuzzy or len(source_norm) < 5:
+    # Fuzzy comparison uses the compact canonical form so punctuation and
+    # separators do not distort similarity. Examples:
+    # big_breasts / Big-Breasts / big breasts / big.breasts -> bigbreasts.
+    source_fuzzy = compact_name(source_name)
+    if not allow_fuzzy or len(source_fuzzy) < 5:
         return EntityDecision(None, False, "no match")
 
     scored: List[Tuple[float, Dict[str, Any]]] = []
@@ -128,12 +132,12 @@ def decide_entity_match(
         values = [str(entity.get("name") or "")]
         values.extend(str(v or "") for v in (entity.get(alias_field) or []))
         for value in values:
-            candidate = normalize_name(value)
-            if not candidate or candidate[0] != source_norm[0]:
+            candidate = compact_name(value)
+            if not candidate or candidate[0] != source_fuzzy[0]:
                 continue
-            if abs(len(candidate) - len(source_norm)) > 4:
+            if abs(len(candidate) - len(source_fuzzy)) > 4:
                 continue
-            best = max(best, difflib.SequenceMatcher(None, source_norm, candidate).ratio())
+            best = max(best, difflib.SequenceMatcher(None, source_fuzzy, candidate).ratio())
         if best:
             scored.append((best, entity))
 
@@ -279,7 +283,30 @@ def match_old_media(
         return MediaMatch(next(iter(path_candidates)), "exact-path", "exact current path")
     if len(path_candidates) > 1:
         return MediaMatch(None, "ambiguous", "exact path maps to multiple objects")
-    return MediaMatch(None, "unmatched", "no exact fingerprint or exact-path match")
+    inspected: List[str] = []
+    for old_path in old_paths or []:
+        path_text = str(old_path)
+        info = old_files.get(path_text)
+        if not info:
+            inspected.append(f"{path_text} [no exported file record]")
+            continue
+        fingerprints = info.get("fingerprints") or {}
+        fp_bits = []
+        for fp_type in STRONG_FINGERPRINT_TYPES:
+            value = str(fingerprints.get(fp_type) or "").strip()
+            if value:
+                fp_bits.append(f"{fp_type}:{value[:12]}")
+        if fp_bits:
+            inspected.append(f"{path_text} [{', '.join(fp_bits)}]")
+        else:
+            inspected.append(f"{path_text} [no md5/oshash]")
+    detail = "no exact fingerprint or exact-path match"
+    if inspected:
+        preview = "; ".join(inspected[:3])
+        if len(inspected) > 3:
+            preview += f"; +{len(inspected) - 3} more"
+        detail += f"; old file evidence: {preview}"
+    return MediaMatch(None, "unmatched", detail)
 
 
 def _safe_zip_members(archive: zipfile.ZipFile, target: Path) -> None:
