@@ -500,6 +500,7 @@ class MigrationEngine:
         source = self._source_entity(self.old_tags_by_name, name)
         stash_id_match, stash_id_ambiguous = self._tag_stash_id_match(source)
         primary_match, primary_ambiguous = self._primary_tag_match(name)
+        relationship_only_due_identity_disagreement = False
 
         # Relationship identity follows the current primary Tag name first.
         # External IDs can disambiguate duplicate primaries or provide fallback
@@ -513,6 +514,7 @@ class MigrationEngine:
                 and str(stash_id_match.entity.get("id") or "") != str(primary_match.entity.get("id") or "")
             ):
                 self.stats["entity_identity_conflicts"] += 1
+                relationship_only_due_identity_disagreement = True
                 log(
                     "WARNING",
                     f"Tag '{name}' has a unique current primary-name match "
@@ -610,6 +612,13 @@ class MigrationEngine:
                     f"({match.score * 100:.1f}%, next {match.second_score * 100:.1f}%).",
                 )
         if match:
+            if relationship_only_due_identity_disagreement:
+                self.stats["tag_identity_conflict_relationship_reuse"] += 1
+                self.stats["reused_tags"] += 1
+                tag_id = str(match.entity["id"])
+                self.resolved_tags[key] = tag_id
+                return tag_id
+
             identity_conflict = _same_endpoint_identity_conflict(
                 match.entity.get("stash_ids") or [], source.get("stash_ids") or []
             )
