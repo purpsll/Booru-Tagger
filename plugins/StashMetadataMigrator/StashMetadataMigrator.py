@@ -281,6 +281,8 @@ class MigrationEngine:
             "source_groups": len(self.old_groups),
             "matched_scenes": 0,
             "matched_images": 0,
+            "strict_phash_scene_matches": 0,
+            "strict_phash_image_matches": 0,
             "updated_scenes": 0,
             "updated_images": 0,
             "unmatched_scenes": 0,
@@ -2077,6 +2079,7 @@ class MigrationEngine:
             "unmatched": 0,
             "ambiguous": 0,
             "collisions": 0,
+            "strict_phash": 0,
         }
         gallery_evidence: Dict[str, List[set]] = {}
         used_scene_targets = set()
@@ -2104,6 +2107,8 @@ class MigrationEngine:
                     continue
                 used_targets.add(match.object_id)
                 summary["matched"] += 1
+                if match.kind == "strict-phash":
+                    summary["strict_phash"] += 1
                 current = current_by_id.get(str(match.object_id)) or {}
                 current_gallery_ids = {
                     str(gallery.get("id") or "")
@@ -2148,7 +2153,8 @@ class MigrationEngine:
                 "INFO",
                 f"Preflight media identity: {summary['matched']}/{total} uniquely matched "
                 f"({rate * 100:.1f}%); {summary['unmatched']} unmatched, "
-                f"{summary['ambiguous']} ambiguous, {summary['collisions']} source-target collision(s).",
+                f"{summary['ambiguous']} ambiguous, {summary['collisions']} source-target collision(s), "
+                f"{summary['strict_phash']} strict pHash+size fallback match(es).",
             )
             if self.inferred_gallery_map:
                 log(
@@ -2207,6 +2213,13 @@ class MigrationEngine:
             else:
                 used_scene_targets.add(match.object_id)
                 self.stats["matched_scenes"] += 1
+                if match.kind == "strict-phash":
+                    self.stats["strict_phash_scene_matches"] += 1
+                    log(
+                        "INFO",
+                        f"Scene {match.object_id} matched by strict pHash+exact-size fallback "
+                        f"({match.detail}).",
+                    )
                 current = self.scenes_by_id[match.object_id]
                 try:
                     if self.restore_scene(old, current):
@@ -2239,6 +2252,13 @@ class MigrationEngine:
             else:
                 used_image_targets.add(match.object_id)
                 self.stats["matched_images"] += 1
+                if match.kind == "strict-phash":
+                    self.stats["strict_phash_image_matches"] += 1
+                    log(
+                        "INFO",
+                        f"Image {match.object_id} matched by strict pHash+exact-size fallback "
+                        f"({match.detail}).",
+                    )
                 current = self.images_by_id[match.object_id]
                 try:
                     if self.restore_image(old, current):
@@ -2256,6 +2276,8 @@ class MigrationEngine:
             f"and {self.stats['matched_images']}/{len(self.old_images)} images; "
             f"{self.stats['unmatched_scenes'] + self.stats['unmatched_images']} unmatched, "
             f"{self.stats['ambiguous_scenes'] + self.stats['ambiguous_images']} ambiguous, "
+            f"strict pHash+size matches="
+            f"{self.stats['strict_phash_scene_matches'] + self.stats['strict_phash_image_matches']}, "
             f"{self.stats['errors']} error(s).",
         )
         log(

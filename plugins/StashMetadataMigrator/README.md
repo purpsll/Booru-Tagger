@@ -1,4 +1,4 @@
-# Stash Metadata Migrator v1.1.6
+# Stash Metadata Migrator v1.1.7
 
 **Stash Metadata Migrator restores an old Stash JSON export into a new Stash that has already scanned the real media files—without recreating Scene, Image, or File records.**
 
@@ -142,13 +142,19 @@ Examples:
 
 This keeps formatting differences from artificially lowering match confidence while preserving the existing identity-conflict and token-subset safety checks.
 
-### Exact media hash matching and diagnostics
+### Exact media hash matching and strict pHash fallback
 
-Media identity compares hashes only when the **same algorithm** matches exactly. Supported exact content hashes are MD5, OShash, SHA-1, SHA-256, and SHA-512 (including common punctuation/case variants such as `SHA-256`). Different algorithms are never compared to each other.
+Media identity first compares only **same-algorithm exact content hashes**. Supported exact content hashes are MD5, OShash, SHA-1, SHA-256, and SHA-512 (including common punctuation/case variants such as `SHA-256`). Different algorithms are never compared to each other.
 
-Perceptual hashes such as pHash are deliberately excluded from identity matching because an exact or near perceptual hash is not a safe proof that two media records are the same file.
+If no strong old hash is available and no exact path matches, v1.1.7 allows one conservative last-resort fallback:
 
-When a Scene/Image still cannot be matched by an exact content hash or exact path, the warning shows the old exported file path plus the hash evidence that was actually present, including excluded pHash-only cases. This makes moved/missing media diagnosable without falling back to unsafe filename guessing.
+- the old and current files must have the **exact same pHash**
+- the old and current files must have the **exact same byte size**
+- the combined pHash+size key must resolve to **exactly one** current Scene/Image
+- if more than one current object matches, the record remains ambiguous
+- if the old export contains MD5/OShash/SHA evidence that fails to match, pHash is **not** allowed to override that stronger evidence
+
+When a Scene/Image still cannot be matched, the warning shows the old exported file path plus the hash evidence that was actually present. Analyze and Restore also report how many records were recovered through strict pHash+size fallback.
 
 ### Duplicate-averse Tag creation
 

@@ -60,6 +60,114 @@ class MigrationCoreTests(unittest.TestCase):
         )
         self.assertEqual(match.object_id, "20")
 
+    def test_strict_phash_plus_exact_size_matches_as_last_resort(self):
+        current = [{
+            "id": "30",
+            "files": [{
+                "path": "/new/a.jpg",
+                "size": 12345,
+                "fingerprints": [{"type": "phash", "value": "ffff"}],
+            }],
+        }]
+        fp_index, path_index = build_current_media_indexes(current)
+        old_files = {
+            "/old/a.jpg": {
+                "path": "/old/a.jpg",
+                "size": 12345,
+                "fingerprints": {"phash": "ffff"},
+            }
+        }
+        match = match_old_media(
+            ["/old/a.jpg"], old_files, fp_index, path_index
+        )
+        self.assertEqual(match.object_id, "30")
+        self.assertEqual(match.kind, "strict-phash")
+
+    def test_strict_phash_requires_exact_file_size(self):
+        current = [{
+            "id": "31",
+            "files": [{
+                "path": "/new/a.jpg",
+                "size": 12346,
+                "fingerprints": [{"type": "phash", "value": "ffff"}],
+            }],
+        }]
+        fp_index, path_index = build_current_media_indexes(current)
+        old_files = {
+            "/old/a.jpg": {
+                "path": "/old/a.jpg",
+                "size": 12345,
+                "fingerprints": {"phash": "ffff"},
+            }
+        }
+        match = match_old_media(
+            ["/old/a.jpg"], old_files, fp_index, path_index
+        )
+        self.assertIsNone(match.object_id)
+        self.assertEqual(match.kind, "unmatched")
+
+    def test_strict_phash_does_not_override_old_strong_hash(self):
+        current = [{
+            "id": "32",
+            "files": [{
+                "path": "/new/a.jpg",
+                "size": 12345,
+                "fingerprints": [
+                    {"type": "phash", "value": "ffff"},
+                    {"type": "md5", "value": "current-md5"},
+                ],
+            }],
+        }]
+        fp_index, path_index = build_current_media_indexes(current)
+        old_files = {
+            "/old/a.jpg": {
+                "path": "/old/a.jpg",
+                "size": 12345,
+                "fingerprints": {
+                    "phash": "ffff",
+                    "md5": "different-old-md5",
+                },
+            }
+        }
+        match = match_old_media(
+            ["/old/a.jpg"], old_files, fp_index, path_index
+        )
+        self.assertIsNone(match.object_id)
+        self.assertEqual(match.kind, "unmatched")
+
+    def test_strict_phash_duplicate_candidates_are_ambiguous(self):
+        current = [
+            {
+                "id": "33",
+                "files": [{
+                    "path": "/new/a.jpg",
+                    "size": 12345,
+                    "fingerprints": [{"type": "phash", "value": "ffff"}],
+                }],
+            },
+            {
+                "id": "34",
+                "files": [{
+                    "path": "/new/b.jpg",
+                    "size": 12345,
+                    "fingerprints": [{"type": "phash", "value": "ffff"}],
+                }],
+            },
+        ]
+        fp_index, path_index = build_current_media_indexes(current)
+        old_files = {
+            "/old/a.jpg": {
+                "path": "/old/a.jpg",
+                "size": 12345,
+                "fingerprints": {"phash": "ffff"},
+            }
+        }
+        match = match_old_media(
+            ["/old/a.jpg"], old_files, fp_index, path_index
+        )
+        self.assertIsNone(match.object_id)
+        self.assertEqual(match.kind, "ambiguous")
+
     def test_phash_is_never_used_as_identity(self):
         current = [{
             "id": "30",
