@@ -32,7 +32,7 @@ Refresh plugin sources and install **Booru Importer**.
 
 Installing from the source above also enables Stash's normal **Installed Plugins → Update** workflow. The internal plugin ID intentionally remains `DanbooruTagImporter` so updates replace the existing installation.
 
-The same source now also publishes **Stash Metadata Migrator**, a separate add-on for restoring an old Stash JSON export onto media already scanned into a new Stash. It matches media by exact MD5/OShash fingerprints so old paths do not create a second set of Scene/Image/File records, and it conservatively reuses/merges Tags, Performers, and Studios.
+The same source also publishes **Stash Metadata Migrator v1.1**, a separate migration add-on for restoring an old Stash JSON export onto media already scanned into a new Stash. It matches media by exact MD5/OShash fingerprints so changed paths do not create a second set of Scene/Image/File records; safely reconciles Tags, Performers, and Studios; and restores Galleries, Groups, chapters, Scene markers, hierarchy, artwork, custom fields, and history. Restore automatically creates a Stash database backup before changing metadata.
 
 ### Manual installation
 
