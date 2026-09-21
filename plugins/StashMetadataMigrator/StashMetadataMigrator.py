@@ -255,6 +255,7 @@ class MigrationEngine:
             "stash_id_tag_reuse": 0,
             "tag_identity_conflict_relationship_reuse": 0,
             "tag_creation_guard_skips": 0,
+            "tag_alias_collision_skips": 0,
             "fuzzy_performer_reuse": 0,
             "fuzzy_studio_reuse": 0,
             "merged_duplicate_tags": 0,
@@ -500,7 +501,56 @@ class MigrationEngine:
         stash_id_match, stash_id_ambiguous = self._tag_stash_id_match(source)
         primary_match, primary_ambiguous = self._primary_tag_match(name)
 
-        if stash_id_match is not None:
+        # Relationship identity follows the current primary Tag name first.
+        # External IDs can disambiguate duplicate primaries or provide fallback
+        # identity, but must not redirect an exact current primary-name match to
+        # a differently named Tag.
+        if primary_match is not None:
+            match = primary_match
+            self.stats["primary_tag_reuse"] += 1
+            if (
+                stash_id_match is not None
+                and str(stash_id_match.entity.get("id") or "") != str(primary_match.entity.get("id") or "")
+            ):
+                self.stats["entity_identity_conflicts"] += 1
+                log(
+                    "WARNING",
+                    f"Tag '{name}' has a unique current primary-name match "
+                    f"'{primary_match.entity.get('name')}', but its old external Stash ID "
+                    f"matches different current Tag '{stash_id_match.entity.get('name')}'. "
+                    "The relationship will use the primary-name Tag and conflicting identity "
+                    "metadata will not be merged.",
+                )
+        elif primary_ambiguous:
+            if (
+                stash_id_match is not None
+                and normalize_name(str(stash_id_match.entity.get("name") or "")) == key
+            ):
+                match = stash_id_match
+                self.stats["stash_id_tag_reuse"] += 1
+                log(
+                    "INFO",
+                    f"Tag identity disambiguation: '{name}' -> "
+                    f"'{match.entity.get('name')}' by exact endpoint + Stash ID.",
+                )
+            else:
+                merged_entity = self._safe_merge_ambiguous_tag(name)
+                if merged_entity is None:
+                    self.stats["ambiguous_entities_skipped"] += 1
+                    log(
+                        "WARNING",
+                        f"Tag '{name}' has multiple current primary-name matches that cannot "
+                        "be safely disambiguated or collapsed; relationship skipped.",
+                    )
+                    self.resolved_tags[key] = None
+                    return None
+                match = EntityMatch(
+                    merged_entity,
+                    "safe-duplicate-merge",
+                    1.0,
+                    0.0,
+                )
+        elif stash_id_match is not None:
             match = stash_id_match
             self.stats["stash_id_tag_reuse"] += 1
             log(
@@ -517,18 +567,23 @@ class MigrationEngine:
             )
             self.resolved_tags[key] = None
             return None
-        elif primary_match is not None:
-            match = primary_match
-            self.stats["primary_tag_reuse"] += 1
         else:
-            if primary_ambiguous:
+            decision = decide_entity_match(
+                    name,
+                    self.tags,
+                    alias_field="aliases",
+                    allow_fuzzy=True,
+                    threshold=TAG_THRESHOLD,
+                    margin=TAG_MARGIN,
+                )
+            if decision.ambiguous:
                 merged_entity = self._safe_merge_ambiguous_tag(name)
                 if merged_entity is None:
                     self.stats["ambiguous_entities_skipped"] += 1
                     log(
                         "WARNING",
-                        f"Tag '{name}' has multiple current primary-name matches that cannot "
-                        "be safely collapsed; relationship skipped.",
+                        f"Tag '{name}' has ambiguous alias/fuzzy current matches and no "
+                        "unique primary-name match; relationship skipped.",
                     )
                     self.resolved_tags[key] = None
                     return None
@@ -539,33 +594,7 @@ class MigrationEngine:
                     0.0,
                 )
             else:
-                decision = decide_entity_match(
-                    name,
-                    self.tags,
-                    alias_field="aliases",
-                    allow_fuzzy=True,
-                    threshold=TAG_THRESHOLD,
-                    margin=TAG_MARGIN,
-                )
-                if decision.ambiguous:
-                    merged_entity = self._safe_merge_ambiguous_tag(name)
-                    if merged_entity is None:
-                        self.stats["ambiguous_entities_skipped"] += 1
-                        log(
-                            "WARNING",
-                            f"Tag '{name}' has ambiguous alias/fuzzy current matches and no "
-                            "unique primary-name match; relationship skipped.",
-                        )
-                        self.resolved_tags[key] = None
-                        return None
-                    match = EntityMatch(
-                        merged_entity,
-                        "safe-duplicate-merge",
-                        1.0,
-                        0.0,
-                    )
-                else:
-                    match = decision.match
+                match = decision.match
         if match and match.kind == "fuzzy":
             source_tokens = set(normalize_name(name).split())
             target_tokens = set(normalize_name(str(match.entity.get("name") or "")).split())
@@ -645,10 +674,71 @@ class MigrationEngine:
         self.resolved_tags[key] = tag_id
         return tag_id
 
+    def _safe_tag_aliases(
+        self,
+        aliases: Iterable[str],
+        *,
+        destination_id: Optional[str] = None,
+        destination_name: Optional[str] = None,
+    ) -> List[str]:
+        """Filter aliases that would collide with another current Tag.
+
+        Stash requires Tag names and aliases to remain globally non-conflicting.
+        A metadata merge must never fail just because an old alias is already a
+        current Tag's primary name or alias.
+        """
+        destination_id = str(destination_id or "")
+        destination_name_key = str(destination_name or "").casefold().strip()
+
+        primary_owners: Dict[str, str] = {}
+        alias_owners: Dict[str, str] = {}
+        for tag in self.tags:
+            tag_id = str(tag.get("id") or "")
+            name_key = str(tag.get("name") or "").casefold().strip()
+            if name_key:
+                primary_owners[name_key] = tag_id
+            for alias in tag.get("aliases") or []:
+                alias_key = str(alias or "").casefold().strip()
+                if alias_key:
+                    alias_owners[alias_key] = tag_id
+
+        out: List[str] = []
+        seen = set()
+        skipped: List[str] = []
+        for alias in aliases or []:
+            text = str(alias or "").strip()
+            key = text.casefold()
+            if not text or key in seen or key == destination_name_key:
+                continue
+
+            primary_owner = primary_owners.get(key)
+            alias_owner = alias_owners.get(key)
+            if (
+                (primary_owner and primary_owner != destination_id)
+                or (alias_owner and alias_owner != destination_id)
+            ):
+                skipped.append(text)
+                continue
+
+            seen.add(key)
+            out.append(text)
+
+        if skipped:
+            self.stats["tag_alias_collision_skips"] += len(set(v.casefold() for v in skipped))
+            log(
+                "WARNING",
+                "Skipped conflicting Tag alias(es) while preserving current Tag identities: "
+                + ", ".join(sorted(set(skipped), key=str.casefold)),
+            )
+        return out
+
     def _tag_create_input(self, source: Dict[str, Any], fallback_name: str) -> Dict[str, Any]:
         data: Dict[str, Any] = {
             "name": str(source.get("name") or fallback_name).strip(),
-            "aliases": merge_strings(source.get("aliases") or []),
+            "aliases": self._safe_tag_aliases(
+                merge_strings(source.get("aliases") or []),
+                destination_name=str(source.get("name") or fallback_name).strip(),
+            ),
             "favorite": bool(source.get("favorite")),
             "ignore_auto_tag": bool(source.get("ignore_auto_tag")),
             "stash_ids": merge_stash_ids(source.get("stash_ids") or []),
@@ -671,6 +761,11 @@ class MigrationEngine:
             [str(source.get("name") or "")],
         )
         aliases = [a for a in aliases if a.casefold() != str(current.get("name") or "").casefold()]
+        aliases = self._safe_tag_aliases(
+            aliases,
+            destination_id=str(current.get("id") or ""),
+            destination_name=str(current.get("name") or ""),
+        )
         stash_ids, conflicts = _safe_stash_ids(
             current.get("stash_ids") or [], source.get("stash_ids") or []
         )
