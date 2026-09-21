@@ -446,6 +446,48 @@ class MigrationEngineTests(unittest.TestCase):
                 for name, data in stash.calls
             ))
 
+    def test_exact_stash_id_reuses_existing_tag_before_creating_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "tags", "legacy-tag.json", {
+                "name": "Legacy Tag Name",
+                "stash_ids": [{"endpoint": "https://tags.example", "stash_id": "42"}],
+            })
+
+            stash = FakeStash()
+            stash._tags.append({
+                "id": "t-canonical", "name": "Canonical Tag", "aliases": [],
+                "sort_name": None, "description": None, "favorite": False,
+                "ignore_auto_tag": False,
+                "stash_ids": [{"endpoint": "https://tags.example", "stash_id": "42"}],
+                "custom_fields": {}, "parents": [], "children": [],
+                "image_path": None,
+            })
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_tag("Legacy Tag Name")
+
+            self.assertEqual(resolved, "t-canonical")
+            self.assertEqual(engine.stats["stash_id_tag_reuse"], 1)
+            self.assertEqual(engine.stats["created_tags"], 0)
+            self.assertFalse(any(name == "create_tag" for name, _ in stash.calls))
+
+    def test_plausible_existing_tag_blocks_new_tag_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "tags", "near-tag.json", {
+                "name": "Big Brests",
+            })
+
+            stash = FakeStash()
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_tag("Big Brests")
+
+            self.assertIsNone(resolved)
+            self.assertEqual(engine.stats["tag_creation_guard_skips"], 1)
+            self.assertEqual(engine.stats["created_tags"], 0)
+            self.assertFalse(any(name == "create_tag" for name, _ in stash.calls))
+
     def test_safe_duplicate_tags_are_collapsed_during_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._build_export(tmp)
