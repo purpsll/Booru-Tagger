@@ -16,6 +16,12 @@ EXPECTED_TASKS = [
     "6. Scan Similar Tags (No Changes)",
     "7. Merge Safe Duplicate Tags",
     "8. Show Similar Tag Review Candidates",
+    "9. Scan Similar Performers (No Changes)",
+    "10. Merge Safe Duplicate Performers",
+    "11. Show Similar Performer Review Candidates",
+    "12. Scan Similar Studios (No Changes)",
+    "13. Merge Safe Duplicate Studios",
+    "14. Show Similar Studio Review Candidates",
 ]
 
 

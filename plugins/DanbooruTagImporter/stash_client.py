@@ -431,6 +431,234 @@ class Stash:
             raise RuntimeError("Stash returned no tag from tagsMerge")
         return result
 
+    def performers_for_cleanup(self) -> List[Dict[str, Any]]:
+        """Fetch Performer identity, metadata and usage needed for safe cleanup."""
+        out: List[Dict[str, Any]] = []
+        page = 1
+        per_page = 250
+        while True:
+            q = """
+            query PerformersForCleanup($filter: FindFilterType) {
+              findPerformers(filter: $filter) {
+                count
+                performers {
+                  id name disambiguation alias_list urls gender birthdate ethnicity
+                  country eye_color height_cm measurements fake_tits penis_length
+                  circumcised career_start career_end tattoos piercings favorite
+                  rating100 details death_date hair_color weight ignore_auto_tag
+                  image_path custom_fields
+                  tags { id }
+                  stash_ids { endpoint stash_id }
+                  scene_count image_count gallery_count group_count
+                }
+              }
+            }
+            """
+            data = self.gql(q, {"filter": {"page": page, "per_page": per_page}})["findPerformers"]
+            batch = data["performers"]
+            out.extend(batch)
+            if page * per_page >= int(data["count"]) or not batch:
+                break
+            page += 1
+        return out
+
+    def studios_for_cleanup(self) -> List[Dict[str, Any]]:
+        """Fetch Studio identity, hierarchy, metadata and usage for safe cleanup."""
+        out: List[Dict[str, Any]] = []
+        page = 1
+        per_page = 250
+        while True:
+            q = """
+            query StudiosForCleanup($filter: FindFilterType) {
+              findStudios(filter: $filter) {
+                count
+                studios {
+                  id name aliases urls rating100 details favorite ignore_auto_tag organized
+                  image_path custom_fields
+                  parent_studio { id }
+                  child_studios { id }
+                  tags { id }
+                  stash_ids { endpoint stash_id }
+                  scene_count(depth: 0)
+                  image_count(depth: 0)
+                  gallery_count(depth: 0)
+                  group_count(depth: 0)
+                }
+              }
+            }
+            """
+            data = self.gql(q, {"filter": {"page": page, "per_page": per_page}})["findStudios"]
+            batch = data["studios"]
+            out.extend(batch)
+            if page * per_page >= int(data["count"]) or not batch:
+                break
+            page += 1
+        return out
+
+    def merge_performers(
+        self,
+        source_ids: List[str],
+        destination_id: str,
+        values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        sources = [str(value) for value in source_ids if str(value)]
+        destination = str(destination_id)
+        if not sources or not destination or destination in sources:
+            raise ValueError("Invalid performer merge source/destination")
+        merged_values = dict(values or {})
+        merged_values["id"] = destination
+        q = """
+        mutation MergePerformers($input: PerformerMergeInput!) {
+          performerMerge(input: $input) { id name alias_list urls stash_ids { endpoint stash_id } }
+        }
+        """
+        result = self.gql(q, {"input": {
+            "source": sources,
+            "destination": destination,
+            "values": merged_values,
+        }}).get("performerMerge")
+        if not result:
+            raise RuntimeError("Stash returned no performer from performerMerge")
+        return result
+
+    def _ids_with_studios(
+        self,
+        source_ids: List[str],
+        *,
+        root: str,
+        collection: str,
+        filter_type: str,
+        filter_arg: str,
+    ) -> List[str]:
+        out: List[str] = []
+        page = 1
+        per_page = 500
+        query = f"""
+        query ObjectsByStudio($filter: FindFilterType, $object_filter: {filter_type}) {{
+          {root}(filter: $filter, {filter_arg}: $object_filter) {{
+            count
+            {collection} {{ id }}
+          }}
+        }}
+        """
+        object_filter = {
+            "studios": {
+                "value": [str(value) for value in source_ids],
+                "modifier": "INCLUDES",
+                "depth": 0,
+            }
+        }
+        while True:
+            data = self.gql(query, {
+                "filter": {"page": page, "per_page": per_page},
+                "object_filter": object_filter,
+            })[root]
+            batch = data[collection]
+            out.extend(str(item["id"]) for item in batch)
+            if page * per_page >= int(data["count"]) or not batch:
+                break
+            page += 1
+        return out
+
+    def _bulk_assign_studio(
+        self,
+        ids: List[str],
+        destination_id: str,
+        *,
+        mutation: str,
+        input_type: str,
+    ) -> None:
+        if not ids:
+            return
+        for offset in range(0, len(ids), 250):
+            batch = ids[offset:offset + 250]
+            q = f"""
+            mutation AssignStudio($input: {input_type}!) {{
+              {mutation}(input: $input) {{ id }}
+            }}
+            """
+            self.gql(q, {"input": {
+                "ids": batch,
+                "studio_id": str(destination_id),
+            }})
+
+    def merge_studios(
+        self,
+        source_ids: List[str],
+        destination_id: str,
+        values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Safely emulate Studio merge on Stash v0.31.1, which has no studioMerge mutation."""
+        sources = [str(value) for value in source_ids if str(value)]
+        destination = str(destination_id)
+        if not sources or not destination or destination in sources:
+            raise ValueError("Invalid studio merge source/destination")
+
+        # Preserve mergeable relationships on the survivor before any source is removed.
+        pre_values = {"id": destination}
+        for key in ("urls", "tag_ids"):
+            if key in values:
+                pre_values[key] = values[key]
+        if len(pre_values) > 1:
+            self.gql(
+                """mutation PrepareStudio($input: StudioUpdateInput!) {
+                     studioUpdate(input: $input) { id }
+                   }""",
+                {"input": pre_values},
+            )
+
+        specs = (
+            ("findScenes", "scenes", "SceneFilterType", "scene_filter", "bulkSceneUpdate", "BulkSceneUpdateInput"),
+            ("findImages", "images", "ImageFilterType", "image_filter", "bulkImageUpdate", "BulkImageUpdateInput"),
+            ("findGalleries", "galleries", "GalleryFilterType", "gallery_filter", "bulkGalleryUpdate", "BulkGalleryUpdateInput"),
+            ("findGroups", "groups", "GroupFilterType", "group_filter", "bulkGroupUpdate", "BulkGroupUpdateInput"),
+        )
+        moved: Dict[str, int] = {}
+        collected: List[Tuple[str, List[str], str, str]] = []
+        for root, collection, filter_type, filter_arg, mutation, input_type in specs:
+            ids = self._ids_with_studios(
+                sources,
+                root=root,
+                collection=collection,
+                filter_type=filter_type,
+                filter_arg=filter_arg,
+            )
+            collected.append((collection, ids, mutation, input_type))
+
+        for collection, ids, mutation, input_type in collected:
+            self._bulk_assign_studio(
+                ids,
+                destination,
+                mutation=mutation,
+                input_type=input_type,
+            )
+            moved[collection] = len(ids)
+
+        for source_id in sources:
+            result = self.gql(
+                """mutation DestroyMergedStudio($input: StudioDestroyInput!) {
+                     studioDestroy(input: $input)
+                   }""",
+                {"input": {"id": source_id}},
+            ).get("studioDestroy")
+            if result is not True:
+                raise RuntimeError(f"Stash did not confirm deletion of merged Studio {source_id}")
+
+        final_values = dict(values or {})
+        final_values["id"] = destination
+        updated = self.gql(
+            """mutation FinalizeStudioMerge($input: StudioUpdateInput!) {
+                 studioUpdate(input: $input) {
+                   id name aliases urls stash_ids { endpoint stash_id }
+                 }
+               }""",
+            {"input": final_values},
+        ).get("studioUpdate")
+        if not updated:
+            raise RuntimeError("Studio attachments moved, but final metadata update returned no Studio")
+        updated["_moved"] = moved
+        return updated
+
     def all_performers(self) -> Dict[str, Dict[str, str]]:
         out: Dict[str, Dict[str, str]] = {}
         page = 1

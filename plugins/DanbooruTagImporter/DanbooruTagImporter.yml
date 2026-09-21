@@ -1,6 +1,6 @@
 name: Booru Importer
-description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e621, and high-confidence SauceNAO sources, with conservative Stash tag deduplication tools.
-version: 3.26.23
+description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e621, and high-confidence SauceNAO sources, with conservative Stash tag, Performer, and Studio deduplication tools.
+version: 3.26.24
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=3s, anonymous uploads at >=65s, with adaptive post-429 backoff.
 # SauceNAO review policy: >=93.0% auto-import; 85.0-92.9% candidates with a usable source URL enter Review, including external SauceNAO sources. Review-band hits without a usable URL remain pending. Similarity is normalized to one decimal before threshold comparison so any score displayed as 93.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page.
@@ -127,4 +127,46 @@ tasks:
     description: Lists only ambiguous/fuzzy similar-tag candidates that require manual judgment. This task never changes Stash.
     defaultArgs:
       mode: tag_cleanup
+      cleanup_action: review
+
+  - name: 9. Scan Similar Performers (No Changes)
+    description: Scans Performer names and aliases for likely duplicates. Exact formatting variants are SAFE; fuzzy names, conflicting performer metadata, or disagreeing same-endpoint Stash IDs are REVIEW. No changes are made.
+    defaultArgs:
+      mode: entity_cleanup
+      entity_type: performer
+      cleanup_action: scan
+
+  - name: 10. Merge Safe Duplicate Performers
+    description: Uses Stash's native Performer merge only for SAFE formatting duplicates. Names become aliases and URLs, tags, Stash IDs, and attached media are preserved. Fuzzy or conflicting Performers are never auto-merged.
+    defaultArgs:
+      mode: entity_cleanup
+      entity_type: performer
+      cleanup_action: merge_safe
+
+  - name: 11. Show Similar Performer Review Candidates
+    description: Lists fuzzy or conflicting Performer candidates that require manual judgment. This task never changes Stash.
+    defaultArgs:
+      mode: entity_cleanup
+      entity_type: performer
+      cleanup_action: review
+
+  - name: 12. Scan Similar Studios (No Changes)
+    description: Scans Studio names and aliases for likely duplicates. Exact formatting variants are SAFE; fuzzy names, hierarchy/metadata conflicts, or disagreeing same-endpoint Stash IDs are REVIEW. No changes are made.
+    defaultArgs:
+      mode: entity_cleanup
+      entity_type: studio
+      cleanup_action: scan
+
+  - name: 13. Merge Safe Duplicate Studios
+    description: Safely merges only formatting-equivalent Studios. URLs and tags are preserved, all attached Scenes/Images/Galleries/Groups are reassigned to the survivor, and source names become aliases. Fuzzy or conflicting Studios are never auto-merged.
+    defaultArgs:
+      mode: entity_cleanup
+      entity_type: studio
+      cleanup_action: merge_safe
+
+  - name: 14. Show Similar Studio Review Candidates
+    description: Lists fuzzy, hierarchy-conflicting, or metadata-conflicting Studio candidates that require manual judgment. This task never changes Stash.
+    defaultArgs:
+      mode: entity_cleanup
+      entity_type: studio
       cleanup_action: review
