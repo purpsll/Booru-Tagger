@@ -1,4 +1,4 @@
-# Stash Metadata Migrator v1.1.1
+# Stash Metadata Migrator v1.1.2
 
 **Stash Metadata Migrator restores an old Stash JSON export into a new Stash that has already scanned the real media files—without recreating Scene, Image, or File records.**
 
@@ -113,6 +113,20 @@ Before a destructive merge it checks for:
 - differing Stash IDs from the same endpoint
 
 If those checks fail, the duplicates remain untouched.
+
+### Duplicate-averse Tag creation
+
+Before creating any new Tag, v1.1.2 now tries every reliable reuse path first:
+
+1. exact external Stash ID (endpoint + ID)
+2. unique current primary-name match
+3. safe formatting-equivalent primary duplicate collapse
+4. exact/normalized alias match
+5. high-confidence fuzzy reuse
+
+If none of those is strong enough but an existing current Tag is still a plausible near-match (90% or better), the migrator **does not create a new Tag**. It skips that relationship for review instead. This intentionally prefers a missing relationship over polluting Stash with a likely duplicate.
+
+Analyze reports both Tags that would be created and Tags blocked by this creation guard.
 
 ### Primary Tag names always win for relationships
 

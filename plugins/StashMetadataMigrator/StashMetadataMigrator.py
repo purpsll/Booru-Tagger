@@ -37,6 +37,7 @@ from dedup import (
 
 TAG_THRESHOLD = 0.96
 TAG_MARGIN = 0.02
+TAG_CREATION_GUARD_THRESHOLD = 0.90
 PERFORMER_THRESHOLD = 0.98
 PERFORMER_MARGIN = 0.03
 STUDIO_THRESHOLD = 0.96
@@ -251,7 +252,9 @@ class MigrationEngine:
             "reused_groups": 0,
             "fuzzy_tag_reuse": 0,
             "primary_tag_reuse": 0,
+            "stash_id_tag_reuse": 0,
             "tag_identity_conflict_relationship_reuse": 0,
+            "tag_creation_guard_skips": 0,
             "fuzzy_performer_reuse": 0,
             "fuzzy_studio_reuse": 0,
             "merged_duplicate_tags": 0,
@@ -380,6 +383,76 @@ class MigrationEngine:
         )
         return merged
 
+    def _tag_stash_id_match(
+        self,
+        source: Dict[str, Any],
+    ) -> Tuple[Optional[EntityMatch], bool]:
+        """Match an old Tag to a current Tag by exact endpoint + Stash ID."""
+        source_ids = {
+            (
+                str(item.get("endpoint") or "").casefold().strip(),
+                str(item.get("stash_id") or "").strip(),
+            )
+            for item in (source.get("stash_ids") or [])
+            if str(item.get("endpoint") or "").strip()
+            and str(item.get("stash_id") or "").strip()
+        }
+        if not source_ids:
+            return None, False
+
+        hits = []
+        for tag in self.tags:
+            current_ids = {
+                (
+                    str(item.get("endpoint") or "").casefold().strip(),
+                    str(item.get("stash_id") or "").strip(),
+                )
+                for item in (tag.get("stash_ids") or [])
+                if str(item.get("endpoint") or "").strip()
+                and str(item.get("stash_id") or "").strip()
+            }
+            if source_ids & current_ids:
+                hits.append(tag)
+
+        if len(hits) == 1:
+            return EntityMatch(hits[0], "stash-id", 1.0, 0.0), False
+        if len(hits) > 1:
+            return None, True
+        return None, False
+
+    def _plausible_existing_tag_candidates(self, name: str) -> List[Tuple[float, Dict[str, Any]]]:
+        """Return near matches that make creating another Tag unsafe."""
+        import difflib
+
+        source_norm = normalize_name(name)
+        if len(source_norm) < 4:
+            return []
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for tag in self.tags:
+            values = [str(tag.get("name") or "")]
+            values.extend(str(value or "") for value in (tag.get("aliases") or []))
+            best = 0.0
+            for value in values:
+                candidate = normalize_name(value)
+                if not candidate:
+                    continue
+                if candidate == source_norm:
+                    best = 1.0
+                    break
+                if candidate[0] != source_norm[0]:
+                    continue
+                if abs(len(candidate) - len(source_norm)) > 6:
+                    continue
+                best = max(
+                    best,
+                    difflib.SequenceMatcher(None, source_norm, candidate).ratio(),
+                )
+            if best >= TAG_CREATION_GUARD_THRESHOLD:
+                scored.append((best, tag))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored
+
     def _primary_tag_match(self, name: str) -> Tuple[Optional[EntityMatch], bool]:
         """Prefer current Tag primary names over aliases for relationships.
 
@@ -423,10 +496,28 @@ class MigrationEngine:
         if key in self.resolved_tags:
             return self.resolved_tags[key]
 
-        primary_match, primary_ambiguous = self._primary_tag_match(name)
         source = self._source_entity(self.old_tags_by_name, name)
+        stash_id_match, stash_id_ambiguous = self._tag_stash_id_match(source)
+        primary_match, primary_ambiguous = self._primary_tag_match(name)
 
-        if primary_match is not None:
+        if stash_id_match is not None:
+            match = stash_id_match
+            self.stats["stash_id_tag_reuse"] += 1
+            log(
+                "INFO",
+                f"Tag identity reuse: '{name}' -> '{match.entity.get('name')}' "
+                "by exact endpoint + Stash ID.",
+            )
+        elif stash_id_ambiguous:
+            self.stats["ambiguous_entities_skipped"] += 1
+            log(
+                "WARNING",
+                f"Tag '{name}' has multiple current Tags with the same external "
+                "Stash ID; relationship skipped and no new Tag will be created.",
+            )
+            self.resolved_tags[key] = None
+            return None
+        elif primary_match is not None:
             match = primary_match
             self.stats["primary_tag_reuse"] += 1
         else:
@@ -495,7 +586,7 @@ class MigrationEngine:
             )
             if identity_conflict:
                 self.stats["entity_identity_conflicts"] += 1
-                if match.kind in {"primary-exact", "primary-normalized"}:
+                if match.kind in {"primary-exact", "primary-normalized", "stash-id"}:
                     self.stats["tag_identity_conflict_relationship_reuse"] += 1
                     self.stats["reused_tags"] += 1
                     tag_id = str(match.entity["id"])
@@ -523,6 +614,23 @@ class MigrationEngine:
             tag_id = str(entity["id"])
             self.resolved_tags[key] = tag_id
             return tag_id
+
+        plausible = self._plausible_existing_tag_candidates(name)
+        if plausible:
+            self.stats["tag_creation_guard_skips"] += 1
+            self.stats["ambiguous_entities_skipped"] += 1
+            preview = ", ".join(
+                f"'{tag.get('name')}' ({score * 100:.1f}%)"
+                for score, tag in plausible[:3]
+            )
+            log(
+                "WARNING",
+                f"Tag '{name}' has plausible existing current Tag candidate(s): "
+                f"{preview}. To prevent duplicate Tags, creation and this relationship "
+                "are skipped for review.",
+            )
+            self.resolved_tags[key] = None
+            return None
 
         if self.dry_run:
             self.stats["created_tags"] += 1
@@ -1837,8 +1945,11 @@ class MigrationEngine:
         )
         log(
             "INFO",
-            f"Entity/relationship summary: safe duplicate merges "
-            f"Tags={self.stats['merged_duplicate_tags']}, "
+            f"Entity/relationship summary: Tags reused/created="
+            f"{self.stats['reused_tags']}/{self.stats['created_tags']} "
+            f"(external-ID reuse={self.stats['stash_id_tag_reuse']}, "
+            f"creation-guard skips={self.stats['tag_creation_guard_skips']}); "
+            f"safe duplicate merges Tags={self.stats['merged_duplicate_tags']}, "
             f"Performers={self.stats['merged_duplicate_performers']}, "
             f"Studios={self.stats['merged_duplicate_studios']}; "
             f"Galleries reused/created={self.stats['reused_galleries']}/{self.stats['created_galleries']}; "
