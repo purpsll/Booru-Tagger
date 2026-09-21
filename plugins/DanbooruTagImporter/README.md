@@ -1,10 +1,10 @@
-# Booru Importer v3.26.22
+# Booru Importer v3.26.23
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.22 routes external SauceNAO results in the 85.0–92.9% band to Review when SauceNAO supplies a usable source URL. Review-band hits without a source URL remain pending. v3.26.21 lowered the displayed SauceNAO automatic-import threshold to 93.0%. v3.26.20 fixed two Deep Match edge cases: oversized Stash thumbnail fallbacks are resized before SauceNAO upload, and a high-confidence SauceNAO hit from an external source is no longer misclassified as No Match. High-confidence external matches now import verified source metadata; Yande.re and Konachan are additionally resolved through their post APIs so their authoritative tags can be imported.
+v3.26.23 adds conservative Stash tag cleanup tasks. The plugin can scan the full tag library, automatically merge only formatting-equivalent duplicates, and list fuzzy or metadata-conflicting candidates for manual review. Automatic cleanup never merges fuzzy names. v3.26.22 routes external SauceNAO results in the 85.0–92.9% band to Review when SauceNAO supplies a usable source URL.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -16,7 +16,7 @@ v3.26.22 routes external SauceNAO results in the 85.0–92.9% band to Review whe
 
 ## Requirements
 
-- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during development, and the v3.26.14 release workflow runs the full automated regression suite before packaging the public release.
+- Stash with external-plugin support. The workflow was exercised live on Stash v0.31.1 during development, and the release workflow runs the full automated regression suite before packaging the public release.
 - Python available as `python` in the environment where Stash launches plugins.
 - No pip packages are required; the plugin uses only Python's standard library.
 
@@ -92,6 +92,25 @@ When available, the review candidate's source URL is appended to the Stash image
 
 Rechecks only `Multi-Booru No Match` images. Use this later if booru databases or reverse-search indexes may have gained new content.
 
+### 6. Scan Similar Tags (No Changes)
+
+Scans all Stash tags locally and reports two classes without changing anything:
+
+- **SAFE** — names contain the same letters/numbers after only case, whitespace, underscore, hyphen, punctuation, or legacy category-prefix normalization (for example `big_breasts` and `Big Breasts`, or `deepthroat` and `deep_throat`).
+- **REVIEW** — high textual similarity only, or an otherwise-safe formatting duplicate where both tags contain differing descriptions, hierarchy, images, custom fields, or other rich metadata.
+
+Plugin workflow tags such as `Multi-Booru Imported` are excluded from cleanup.
+
+### 7. Merge Safe Duplicate Tags
+
+Runs Stash's native `tagsMerge` mutation only for SAFE groups. The survivor is chosen conservatively: a tag carrying unique rich metadata is kept first; otherwise the most-used tag wins, with booru-style snake_case used as a deterministic tie-breaker. Stash's native merge transfers tag attachments, source names, aliases, and Stash IDs to the surviving tag.
+
+Fuzzy matches and metadata conflicts are never auto-merged.
+
+### 8. Show Similar Tag Review Candidates
+
+Lists only REVIEW candidates and makes no changes. Use this after the safe merge pass to inspect ambiguous names manually.
+
 ## Persistent workflow states
 
 Exactly one of these status tags is maintained for a classified image:
@@ -129,7 +148,9 @@ State transitions remove the old plugin status marker without removing ordinary 
 - Rule34 HTTP 429: immediate non-blocking 10-minute host-only cooldown
 - Booru artists -> Stash Studios (including Gelbooru/Rule34 artist-category tags resolved through their tag metadata API)
 - Booru characters -> Stash Performers
-- Similar-tag reuse: 96% with a 2-point winner margin
+- Similar-tag reuse during metadata import: 96% with a 2-point winner margin
+- Tag cleanup fuzzy review threshold: 96%; fuzzy candidates are never auto-merged
+- Tag cleanup automatic merge: exact alphanumeric equivalence after formatting normalization only
 - Studio fuzzy alias merge: 96% with a 3-point winner margin
 - Performer fuzzy alias merge: 98% with a 3-point winner margin
 
@@ -163,7 +184,7 @@ Rule34 also has a provider-specific API quirk: an HTTP 200 response with an empt
 
 The plugin preserves existing ordinary Stash metadata. It adds matched source tags when the source exposes authoritative tags and merges source performers, assigns a source artist Studio only when the target has no Studio, sets a source date only when the target has no date, and appends a canonical source URL if it is not already present. High-confidence external SauceNAO sources can also fill a blank Stash title and photographer/creator field from explicit SauceNAO metadata. Yande.re and Konachan matches are resolved to their post APIs for real source tags; sites without a reliable tag endpoint are metadata-only rather than having tags guessed from titles or descriptions.
 
-Normalized and fuzzy entity matching are conservative and require a clear winner. Existing user metadata is not removed by ordinary imports.
+Normalized and fuzzy entity matching are conservative and require a clear winner. Existing user metadata is not removed by ordinary imports. The separate tag-cleanup merge task uses Stash's native tag merge and refuses automatic merges when rich tag metadata conflicts.
 
 ## Installation
 
@@ -187,6 +208,7 @@ For manual installation, the directory should contain at least:
 - `lookup_state.py`
 - `matching.py`
 - `entity_matching.py`
+- `tag_cleanup.py`
 
 ## Tests
 
@@ -196,7 +218,7 @@ From the plugin directory:
 python -m unittest discover -s tests -v
 ```
 
-The regression suite covers provider failure classification, Rule34 cooldown behavior, persistent workflow transitions, pHash selection, Stash authenticated session cookies, credential redaction/auth transport, optional-provider behavior, and pHash metadata isolation.
+The regression suite covers provider failure classification, Rule34 cooldown behavior, persistent workflow transitions, pHash selection, Stash authenticated session cookies, credential redaction/auth transport, optional-provider behavior, pHash metadata isolation, similar-tag cleanup classification, and the native Stash tag-merge GraphQL call.
 
 ## Publishing / maintenance
 

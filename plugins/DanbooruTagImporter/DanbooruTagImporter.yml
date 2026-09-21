@@ -1,6 +1,6 @@
 name: Booru Importer
-description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e621, and high-confidence SauceNAO sources. Fast Scan handles exact matches; Deep Match uses bandwidth-efficient visual search and imports authoritative source metadata.
-version: 3.26.22
+description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e621, and high-confidence SauceNAO sources, with conservative Stash tag deduplication tools.
+version: 3.26.23
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=3s, anonymous uploads at >=65s, with adaptive post-429 backoff.
 # SauceNAO review policy: >=93.0% auto-import; 85.0-92.9% candidates with a usable source URL enter Review, including external SauceNAO sources. Review-band hits without a usable URL remain pending. Similarity is normalized to one decimal before threshold comparison so any score displayed as 93.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page.
@@ -110,3 +110,21 @@ tasks:
       dry_run: false
       force_recheck: true
       only_no_match: true
+
+  - name: 6. Scan Similar Tags (No Changes)
+    description: Safely scans the Stash tag library for likely duplicates. Exact formatting variants are labeled SAFE; fuzzy matches and tags with conflicting metadata are labeled REVIEW. This task never changes Stash.
+    defaultArgs:
+      mode: tag_cleanup
+      cleanup_action: scan
+
+  - name: 7. Merge Safe Duplicate Tags
+    description: Merges only SAFE formatting duplicates whose letters/numbers are identical after case, spacing, underscore, hyphen, punctuation, or legacy category-prefix normalization. Fuzzy matches and metadata conflicts are never merged automatically.
+    defaultArgs:
+      mode: tag_cleanup
+      cleanup_action: merge_safe
+
+  - name: 8. Show Similar Tag Review Candidates
+    description: Lists only ambiguous/fuzzy similar-tag candidates that require manual judgment. This task never changes Stash.
+    defaultArgs:
+      mode: tag_cleanup
+      cleanup_action: review

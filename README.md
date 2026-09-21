@@ -155,6 +155,17 @@ Never share API keys in screenshots, issues, or logs.
 
 ---
 
+## Similar-tag cleanup
+
+Booru Importer also includes conservative local Stash tag cleanup tools:
+
+- **Scan Similar Tags (No Changes)** reports safe formatting duplicates and review-only fuzzy/conflicting candidates.
+- **Merge Safe Duplicate Tags** uses Stash's native tag merge only when the tag names contain the same letters/numbers after harmless formatting normalization. Fuzzy names are never auto-merged.
+- **Show Similar Tag Review Candidates** lists ambiguous candidates without changing Stash.
+
+The merge keeps the tag with important metadata when possible, otherwise prefers the most-used tag and uses booru-style `snake_case` as a tie-breaker. If duplicate tags contain conflicting descriptions, hierarchy, custom fields, or custom tag images, the plugin leaves them for review.
+
+---
 ## Metadata behavior
 
 Booru Importer is designed to add metadata conservatively:

@@ -354,6 +354,83 @@ class Stash:
             page += 1
         return out
 
+    def tags_for_cleanup(self) -> List[Dict[str, Any]]:
+        """Fetch unique tags plus usage/safety metadata for duplicate cleanup."""
+        out: List[Dict[str, Any]] = []
+        page = 1
+        per_page = 250
+        while True:
+            q = """
+            query TagsForCleanup($filter: FindFilterType) {
+              findTags(filter: $filter) {
+                count
+                tags {
+                  id
+                  name
+                  aliases
+                  sort_name
+                  description
+                  ignore_auto_tag
+                  favorite
+                  image_path
+                  custom_fields
+                  scene_count
+                  scene_marker_count
+                  image_count
+                  gallery_count
+                  performer_count
+                  studio_count
+                  group_count
+                  parents { id }
+                  children { id }
+                }
+              }
+            }
+            """
+            data = self.gql(
+                q,
+                {"filter": {"page": page, "per_page": per_page}},
+            )["findTags"]
+            batch = data["tags"]
+            out.extend(batch)
+            if page * per_page >= int(data["count"]) or not batch:
+                break
+            page += 1
+        return out
+
+    def merge_tags(
+        self,
+        source_ids: List[str],
+        destination_id: str,
+    ) -> Dict[str, Any]:
+        """Use Stash's native merge so attachments, aliases and Stash IDs move safely."""
+        sources = [str(tag_id) for tag_id in source_ids if str(tag_id)]
+        destination = str(destination_id)
+        if not sources:
+            raise ValueError("merge_tags requires at least one source tag")
+        if not destination:
+            raise ValueError("merge_tags requires a destination tag")
+        if destination in sources:
+            raise ValueError("destination tag cannot also be a merge source")
+
+        q = """
+        mutation MergeTags($input: TagsMergeInput!) {
+          tagsMerge(input: $input) { id name aliases }
+        }
+        """
+        result = self.gql(
+            q,
+            {
+                "input": {
+                    "source": sources,
+                    "destination": destination,
+                }
+            },
+        ).get("tagsMerge")
+        if not result:
+            raise RuntimeError("Stash returned no tag from tagsMerge")
+        return result
+
     def all_performers(self) -> Dict[str, Dict[str, str]]:
         out: Dict[str, Dict[str, str]] = {}
         page = 1

@@ -64,6 +64,7 @@ from constants import (
     VERSION, VISUAL_SEARCH_MAX_UPLOAD_BYTES,
 )
 from stash_client import Stash
+from tag_cleanup import TagCleanupCandidate, build_tag_cleanup_plan
 
 # Per-process provider state. SauceNAO publishes account-specific quota fields in
 # each JSON response, so its pacing is adaptive instead of assuming the free tier.
@@ -4666,15 +4667,145 @@ def run_hook(stash: Stash, settings: Dict[str, Any], args: Dict[str, Any]) -> No
         log("ERROR", f"Auto-import image {image_id} failed: {exc}")
 
 
+def _log_tag_cleanup_candidates(
+    label: str,
+    candidates: Iterable[TagCleanupCandidate],
+    *,
+    limit: int = 250,
+) -> int:
+    candidates = list(candidates)
+    shown = 0
+    for candidate in candidates[:max(0, int(limit))]:
+        sources = ", ".join(f"'{name}'" for name in candidate.source_names)
+        if candidate.score < 1.0:
+            score_text = f", similarity {candidate.score * 100:.1f}%"
+        else:
+            score_text = ""
+        log(
+            "INFO",
+            f"{label}: keep '{candidate.destination_name}' <- {sources} "
+            f"({candidate.kind}{score_text}). {candidate.reason}",
+        )
+        shown += 1
+    if len(candidates) > shown:
+        log(
+            "INFO",
+            f"{label}: {len(candidates) - shown} additional candidate(s) omitted "
+            f"from the log after the first {shown}.",
+        )
+    return shown
+
+
+def run_tag_cleanup(stash: Stash, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Scan or safely merge duplicate-looking Stash tags.
+
+    Only exact alphanumeric-equivalent formatting duplicates can be merged
+    automatically. Fuzzy matches and tags with conflicting rich metadata are
+    always review-only.
+    """
+    action = str(args.get("cleanup_action") or "scan").strip().casefold()
+    if action not in {"scan", "merge_safe", "review"}:
+        raise RuntimeError(
+            "Unknown tag cleanup action; expected scan, merge_safe, or review"
+        )
+
+    tags = stash.tags_for_cleanup()
+    fuzzy_threshold = max(
+        0.90,
+        min(1.0, float(SIMILAR_TAG_THRESHOLD) / 100.0),
+    )
+    plan = build_tag_cleanup_plan(
+        tags,
+        protected_names=STATUS_MARKER_TAGS,
+        fuzzy_threshold=fuzzy_threshold,
+    )
+
+    stats: Dict[str, Any] = {
+        "action": action,
+        "tags_scanned": len(tags),
+        "safe_groups": len(plan.safe_merges),
+        "safe_source_tags": sum(
+            len(candidate.source_ids) for candidate in plan.safe_merges
+        ),
+        "review_candidates": len(plan.review),
+        "merged_groups": 0,
+        "merged_tags": 0,
+        "errors": 0,
+    }
+
+    if action == "scan":
+        log(
+            "INFO",
+            f"Similar-tag scan: {len(tags)} tags; "
+            f"{len(plan.safe_merges)} safe merge group(s); "
+            f"{len(plan.review)} review-only candidate(s). No changes made.",
+        )
+        _log_tag_cleanup_candidates("SAFE", plan.safe_merges)
+        _log_tag_cleanup_candidates("REVIEW", plan.review)
+        return stats
+
+    if action == "review":
+        log(
+            "INFO",
+            f"Similar-tag review: {len(plan.review)} review-only candidate(s). "
+            "No changes made.",
+        )
+        _log_tag_cleanup_candidates("REVIEW", plan.review)
+        return stats
+
+    log(
+        "INFO",
+        f"Safe tag merge: {len(plan.safe_merges)} formatting-duplicate "
+        f"group(s) eligible; {len(plan.review)} review-only candidate(s) "
+        "will not be touched.",
+    )
+    for candidate in plan.safe_merges:
+        try:
+            stash.merge_tags(
+                list(candidate.source_ids),
+                candidate.destination_id,
+            )
+            stats["merged_groups"] += 1
+            stats["merged_tags"] += len(candidate.source_ids)
+            sources = ", ".join(f"'{name}'" for name in candidate.source_names)
+            log(
+                "INFO",
+                f"Merged tag duplicate(s) {sources} into "
+                f"'{candidate.destination_name}'. Source names/aliases and "
+                "all tag attachments are preserved by Stash's native merge.",
+            )
+        except Exception as exc:
+            stats["errors"] += 1
+            log(
+                "ERROR",
+                f"Could not merge into '{candidate.destination_name}': {exc}",
+            )
+
+    log(
+        "INFO",
+        f"Safe tag merge finished: {stats['merged_groups']} group(s), "
+        f"{stats['merged_tags']} duplicate tag(s) merged, "
+        f"{stats['errors']} error(s); {len(plan.review)} review-only "
+        "candidate(s) left unchanged.",
+    )
+    return stats
+
+
 def main() -> None:
     payload = read_input()
     conn = payload.get("server_connection") or {}
     args = payload.get("args") or {}
     stash = Stash(conn)
-    settings = stash.settings()
 
-    # Never log credentials or the settings object because it may contain the Danbooru API key.
+    # Tag cleanup is local Stash work and does not need provider credentials.
     mode = str(args.get("mode") or "").strip()
+    if mode == "tag_cleanup":
+        stats = run_tag_cleanup(stash, args)
+        print(json.dumps({"output": "ok", "stats": stats}))
+        return
+
+    settings = stash.settings()
+    # Never log credentials or the settings object because it may contain API keys.
     if mode == "import_all":
         stats = import_all(stash, settings, args)
         log("INFO", f"Finished: {stats}")
