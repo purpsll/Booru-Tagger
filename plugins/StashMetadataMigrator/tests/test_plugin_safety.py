@@ -32,9 +32,9 @@ class PluginSafetyTests(unittest.TestCase):
             "2. Restore Metadata to Existing Media",
         ])
 
-    def test_manifest_version_is_1_1_0(self):
+    def test_manifest_version_is_1_1_1(self):
         text = MANIFEST.read_text(encoding="utf-8")
-        self.assertRegex(text, r"(?m)^version:\s*1\.1\.0$")
+        self.assertRegex(text, r"(?m)^version:\s*1\.1\.1$")
 
     def test_restore_has_automatic_database_backup(self):
         text = (MAIN.read_text(encoding="utf-8") + "\n" + CLIENT.read_text(encoding="utf-8"))
