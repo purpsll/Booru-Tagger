@@ -65,6 +65,7 @@ from constants import (
 )
 from stash_client import Stash
 from tag_cleanup import TagCleanupCandidate, build_tag_cleanup_plan
+from entity_cleanup import EntityCleanupCandidate, build_entity_cleanup_plan, merged_entity_values
 
 # Per-process provider state. SauceNAO publishes account-specific quota fields in
 # each JSON response, so its pacing is adaptive instead of assuming the free tier.
@@ -4791,16 +4792,154 @@ def run_tag_cleanup(stash: Stash, args: Dict[str, Any]) -> Dict[str, Any]:
     return stats
 
 
+def _log_entity_cleanup_candidates(
+    label: str,
+    candidates: Iterable[EntityCleanupCandidate],
+    *,
+    limit: int = 250,
+) -> int:
+    candidates = list(candidates)
+    shown = 0
+    for candidate in candidates[:max(0, int(limit))]:
+        sources = ", ".join(f"'{name}'" for name in candidate.source_names)
+        score_text = (
+            f", similarity {candidate.score * 100:.1f}%"
+            if candidate.score < 1.0 else ""
+        )
+        log(
+            "INFO",
+            f"{label}: keep '{candidate.destination_name}' <- {sources} "
+            f"({candidate.kind}{score_text}). {candidate.reason}",
+        )
+        shown += 1
+    if len(candidates) > shown:
+        log(
+            "INFO",
+            f"{label}: {len(candidates) - shown} additional candidate(s) omitted "
+            f"from the log after the first {shown}.",
+        )
+    return shown
+
+
+def run_entity_cleanup(stash: Stash, args: Dict[str, Any]) -> Dict[str, Any]:
+    entity_type = str(args.get("entity_type") or "").strip().casefold()
+    action = str(args.get("cleanup_action") or "scan").strip().casefold()
+    if entity_type not in {"performer", "studio"}:
+        raise RuntimeError("Entity cleanup requires entity_type performer or studio")
+    if action not in {"scan", "merge_safe", "review"}:
+        raise RuntimeError("Unknown entity cleanup action; expected scan, merge_safe, or review")
+
+    if entity_type == "performer":
+        entities = stash.performers_for_cleanup()
+        alias_field = "alias_list"
+        threshold = max(0.90, min(1.0, float(PERFORMER_SIMILARITY_THRESHOLD) / 100.0))
+    else:
+        entities = stash.studios_for_cleanup()
+        alias_field = "aliases"
+        threshold = max(0.90, min(1.0, float(STUDIO_SIMILARITY_THRESHOLD) / 100.0))
+
+    plan = build_entity_cleanup_plan(
+        entities,
+        entity_type=entity_type,
+        alias_field=alias_field,
+        fuzzy_threshold=threshold,
+    )
+    label = "Performer" if entity_type == "performer" else "Studio"
+    stats: Dict[str, Any] = {
+        "action": action,
+        "entity_type": entity_type,
+        "entities_scanned": len(entities),
+        "safe_groups": len(plan.safe_merges),
+        "safe_source_entities": sum(len(item.source_ids) for item in plan.safe_merges),
+        "review_candidates": len(plan.review),
+        "merged_groups": 0,
+        "merged_entities": 0,
+        "errors": 0,
+    }
+
+    if action == "scan":
+        log(
+            "INFO",
+            f"Similar-{entity_type} scan: {len(entities)} {entity_type}(s); "
+            f"{len(plan.safe_merges)} safe merge group(s); "
+            f"{len(plan.review)} review-only candidate(s). No changes made.",
+        )
+        _log_entity_cleanup_candidates("SAFE", plan.safe_merges)
+        _log_entity_cleanup_candidates("REVIEW", plan.review)
+        return stats
+
+    if action == "review":
+        log(
+            "INFO",
+            f"Similar-{entity_type} review: {len(plan.review)} review-only "
+            "candidate(s). No changes made.",
+        )
+        _log_entity_cleanup_candidates("REVIEW", plan.review)
+        return stats
+
+    entities_by_id = {str(item.get("id") or ""): item for item in entities}
+    log(
+        "INFO",
+        f"Safe {entity_type} merge: {len(plan.safe_merges)} formatting-duplicate "
+        f"group(s) eligible; {len(plan.review)} review-only candidate(s) "
+        "will not be touched.",
+    )
+    for candidate in plan.safe_merges:
+        try:
+            values = merged_entity_values(
+                entities_by_id,
+                candidate,
+                alias_field=alias_field,
+            )
+            if entity_type == "performer":
+                stash.merge_performers(
+                    list(candidate.source_ids), candidate.destination_id, values
+                )
+            else:
+                stash.merge_studios(
+                    list(candidate.source_ids), candidate.destination_id, values
+                )
+            stats["merged_groups"] += 1
+            stats["merged_entities"] += len(candidate.source_ids)
+            sources = ", ".join(f"'{name}'" for name in candidate.source_names)
+            log(
+                "INFO",
+                f"Merged {label} duplicate(s) {sources} into "
+                f"'{candidate.destination_name}'. Names become aliases and "
+                "URLs, tags, Stash IDs, and media attachments are preserved.",
+            )
+        except Exception as exc:
+            stats["errors"] += 1
+            log(
+                "ERROR",
+                f"Could not merge {entity_type}(s) into "
+                f"'{candidate.destination_name}': {exc}",
+            )
+
+    log(
+        "INFO",
+        f"Safe {entity_type} merge finished: {stats['merged_groups']} group(s), "
+        f"{stats['merged_entities']} duplicate {entity_type}(s) merged, "
+        f"{stats['errors']} error(s); {len(plan.review)} review-only "
+        "candidate(s) left unchanged.",
+    )
+    return stats
+
+
 def main() -> None:
     payload = read_input()
     conn = payload.get("server_connection") or {}
     args = payload.get("args") or {}
     stash = Stash(conn)
 
-    # Tag cleanup is local Stash work and does not need provider credentials.
+    # Cleanup tasks are local Stash work and do not need provider credentials.
     mode = str(args.get("mode") or "").strip()
     if mode == "tag_cleanup":
         stats = run_tag_cleanup(stash, args)
+        print(json.dumps({"output": "ok", "stats": stats}))
+        return
+    if mode == "entity_cleanup":
+        stats = run_entity_cleanup(stash, args)
         print(json.dumps({"output": "ok", "stats": stats}))
         return
 
