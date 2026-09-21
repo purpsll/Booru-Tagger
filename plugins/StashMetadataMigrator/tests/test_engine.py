@@ -488,6 +488,81 @@ class MigrationEngineTests(unittest.TestCase):
             self.assertEqual(engine.stats["created_tags"], 0)
             self.assertFalse(any(name == "create_tag" for name, _ in stash.calls))
 
+    def test_primary_tag_name_beats_different_external_id_match_without_metadata_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "tags", "3d.json", {
+                "name": "3d",
+                "aliases": ["three dee"],
+                "description": "old description",
+                "stash_ids": [{"endpoint": "https://tags.example", "stash_id": "old-3d"}],
+            })
+
+            stash = FakeStash()
+            stash._tags.extend([
+                {
+                    "id": "t-3d", "name": "3d", "aliases": [],
+                    "sort_name": None, "description": None, "favorite": False,
+                    "ignore_auto_tag": False, "stash_ids": [], "custom_fields": {},
+                    "parents": [], "children": [], "image_path": None,
+                },
+                {
+                    "id": "t-external", "name": "3D Render", "aliases": [],
+                    "sort_name": None, "description": None, "favorite": False,
+                    "ignore_auto_tag": False,
+                    "stash_ids": [{"endpoint": "https://tags.example", "stash_id": "old-3d"}],
+                    "custom_fields": {}, "parents": [], "children": [], "image_path": None,
+                },
+            ])
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_tag("3d")
+
+            self.assertEqual(resolved, "t-3d")
+            self.assertEqual(engine.stats["tag_identity_conflict_relationship_reuse"], 1)
+            self.assertFalse(any(
+                name == "update_tag" and data.get("id") == "t-3d"
+                for name, data in stash.calls
+            ))
+
+    def test_conflicting_old_alias_is_filtered_instead_of_failing_tag_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "tags", "legacy.json", {
+                "name": "Legacy Name",
+                "aliases": ["3d", "safe alias"],
+                "stash_ids": [{"endpoint": "https://tags.example", "stash_id": "legacy-42"}],
+            })
+
+            stash = FakeStash()
+            stash._tags.extend([
+                {
+                    "id": "t-3d", "name": "3d", "aliases": [],
+                    "sort_name": None, "description": None, "favorite": False,
+                    "ignore_auto_tag": False, "stash_ids": [], "custom_fields": {},
+                    "parents": [], "children": [], "image_path": None,
+                },
+                {
+                    "id": "t-canonical", "name": "Canonical Name", "aliases": [],
+                    "sort_name": None, "description": None, "favorite": False,
+                    "ignore_auto_tag": False,
+                    "stash_ids": [{"endpoint": "https://tags.example", "stash_id": "legacy-42"}],
+                    "custom_fields": {}, "parents": [], "children": [], "image_path": None,
+                },
+            ])
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_tag("Legacy Name")
+
+            self.assertEqual(resolved, "t-canonical")
+            update = next(
+                data for name, data in stash.calls
+                if name == "update_tag" and data.get("id") == "t-canonical"
+            )
+            self.assertNotIn("3d", [value.casefold() for value in update["aliases"]])
+            self.assertIn("safe alias", [value.casefold() for value in update["aliases"]])
+            self.assertGreaterEqual(engine.stats["tag_alias_collision_skips"], 1)
+
     def test_safe_duplicate_tags_are_collapsed_during_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._build_export(tmp)
