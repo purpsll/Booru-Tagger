@@ -155,15 +155,17 @@ Never share API keys in screenshots, issues, or logs.
 
 ---
 
-## Similar-tag cleanup
+## Library cleanup: Tags, Performers, and Studios
 
-Booru Importer also includes conservative local Stash tag cleanup tools:
+Booru Importer includes conservative local Stash deduplication tools for **Tags, Performers, and Studios**.
 
-- **Scan Similar Tags (No Changes)** reports safe formatting duplicates and review-only fuzzy/conflicting candidates.
-- **Merge Safe Duplicate Tags** uses Stash's native tag merge only when the tag names contain the same letters/numbers after harmless formatting normalization. Fuzzy names are never auto-merged.
-- **Show Similar Tag Review Candidates** lists ambiguous candidates without changing Stash.
+- **Scan** tasks are read-only and separate safe formatting duplicates from review-only fuzzy/conflicting candidates.
+- **Merge Safe Duplicate Tags** uses Stash's native tag merge.
+- **Merge Safe Duplicate Performers** uses Stash's native Performer merge and preserves source names as aliases plus URLs, tags, Stash IDs, and attached media.
+- **Merge Safe Duplicate Studios** preserves URLs/tags, moves attached Scenes, Images, Galleries, and Groups to the survivor, then preserves source names as aliases and carries forward Stash IDs.
+- **Review** tasks never change Stash.
 
-The merge keeps the tag with important metadata when possible, otherwise prefers the most-used tag and uses booru-style `snake_case` as a tie-breaker. If duplicate tags contain conflicting descriptions, hierarchy, custom fields, or custom tag images, the plugin leaves them for review.
+Automatic cleanup is intentionally strict: fuzzy names are never auto-merged. Conflicting rich metadata, Studio hierarchy conflicts, custom images, or different Stash IDs from the same endpoint force manual review. The survivor prefers the entity carrying important metadata, otherwise the most-used entry wins with booru-style `snake_case` as a deterministic tie-breaker.
 
 ---
 ## Metadata behavior
