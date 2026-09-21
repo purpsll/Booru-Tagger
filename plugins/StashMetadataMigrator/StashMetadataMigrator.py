@@ -260,8 +260,9 @@ class MigrationEngine:
 
         if self.dry_run:
             self.stats["created_tags"] += 1
-            self.resolved_tags[key] = None
-            return None
+            synthetic_id = f"DRYRUN:TAG:{key}"
+            self.resolved_tags[key] = synthetic_id
+            return synthetic_id
 
         created = self.stash.create_tag(self._tag_create_input(source, name))
         self.tags.append(created)
@@ -389,8 +390,9 @@ class MigrationEngine:
 
         if self.dry_run:
             self.stats["created_performers"] += 1
-            self.resolved_performers[key] = None
-            return None
+            synthetic_id = f"DRYRUN:PERFORMER:{key}"
+            self.resolved_performers[key] = synthetic_id
+            return synthetic_id
 
         created = self.stash.create_performer(self._performer_create_input(source, name))
         self.performers.append(created)
@@ -555,8 +557,9 @@ class MigrationEngine:
 
             if self.dry_run:
                 self.stats["created_studios"] += 1
-                self.resolved_studios[key] = None
-                return None
+                synthetic_id = f"DRYRUN:STUDIO:{key}"
+                self.resolved_studios[key] = synthetic_id
+                return synthetic_id
 
             created = self.stash.create_studio(self._studio_create_input(source, name))
             self.studios.append(created)
