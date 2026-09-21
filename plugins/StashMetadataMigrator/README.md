@@ -1,4 +1,4 @@
-# Stash Metadata Migrator v1.1.4
+# Stash Metadata Migrator v1.1.5
 
 **Stash Metadata Migrator restores an old Stash JSON export into a new Stash that has already scanned the real media files—without recreating Scene, Image, or File records.**
 
@@ -113,6 +113,12 @@ Before a destructive merge it checks for:
 - differing Stash IDs from the same endpoint
 
 If those checks fail, the duplicates remain untouched.
+
+### Studio and Performer alias collision protection
+
+When restoring old Studio or Performer metadata, aliases are now preflighted against every current primary name and alias of the same entity type. If an imported alias is already owned by a different current Studio/Performer, that alias is skipped instead of allowing `studioUpdate` or `performerUpdate` to abort the migration.
+
+The relationship continues to use the already matched current Studio/Performer; only the conflicting alias is discarded.
 
 ### Exported artwork normalization
 
