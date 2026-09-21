@@ -1,4 +1,4 @@
-# Stash Metadata Migrator v1.1.2
+# Stash Metadata Migrator v1.1.3
 
 **Stash Metadata Migrator restores an old Stash JSON export into a new Stash that has already scanned the real media files—without recreating Scene, Image, or File records.**
 
@@ -113,6 +113,12 @@ Before a destructive merge it checks for:
 - differing Stash IDs from the same endpoint
 
 If those checks fail, the duplicates remain untouched.
+
+### Tag alias collision protection
+
+When old metadata is merged into an existing Tag, the migrator now preflights every alias against all current Tag primary names and aliases. If an old alias is already owned elsewhere, that alias is skipped instead of allowing Stash to reject the entire `tagUpdate`.
+
+If a unique current primary-name match disagrees with an external Stash-ID match that points at a different current Tag, the media relationship follows the current primary-name Tag and the conflicting old Tag entity metadata is not merged. External IDs are used as fallback identity or to disambiguate otherwise ambiguous primary-name matches; they do not override a unique current primary-name relationship.
 
 ### Duplicate-averse Tag creation
 
