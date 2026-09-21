@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 
 PLUGIN_ID = "StashMetadataMigrator"
-USER_AGENT = "StashMetadataMigrator/1.0.0"
+USER_AGENT = "StashMetadataMigrator/1.1.0"
 
 
 def connection_endpoint(conn: Dict[str, Any]) -> str:
@@ -92,6 +92,13 @@ class Stash:
               tags { id name aliases }
               performers { id name alias_list }
               stash_ids { endpoint stash_id }
+              galleries { id title }
+              groups { group { id name aliases } scene_index }
+              scene_markers {
+                id title seconds end_seconds
+                primary_tag { id name }
+                tags { id name }
+              }
               custom_fields
               files { id path size fingerprints { type value } }
             }
@@ -106,10 +113,11 @@ class Stash:
           findImages(filter: $filter) {
             count
             images {
-              id title code details photographer urls date rating100 organized
+              id title code details photographer urls date rating100 organized o_counter
               studio { id name aliases }
               tags { id name aliases }
               performers { id name alias_list }
+              galleries { id title }
               custom_fields
               files { id path size fingerprints { type value } }
             }
@@ -124,9 +132,12 @@ class Stash:
           findTags(filter: $filter) {
             count
             tags {
-              id name sort_name description aliases ignore_auto_tag favorite
+              id name sort_name description aliases ignore_auto_tag favorite image_path
               stash_ids { endpoint stash_id }
               custom_fields
+              scene_count scene_marker_count image_count gallery_count
+              performer_count studio_count group_count
+              parents { id } children { id }
             }
           }
         }
@@ -142,10 +153,11 @@ class Stash:
               id name disambiguation alias_list urls gender birthdate ethnicity country
               eye_color height_cm measurements fake_tits penis_length circumcised
               career_start career_end tattoos piercings favorite rating100 details
-              death_date hair_color weight ignore_auto_tag
+              death_date hair_color weight ignore_auto_tag image_path
               stash_ids { endpoint stash_id }
               tags { id name }
               custom_fields
+              scene_count image_count gallery_count group_count
             }
           }
         }
@@ -158,16 +170,72 @@ class Stash:
           findStudios(filter: $filter) {
             count
             studios {
-              id name aliases urls rating100 favorite details ignore_auto_tag organized
+              id name aliases urls rating100 favorite details ignore_auto_tag organized image_path
               parent_studio { id name }
+              child_studios { id name }
               stash_ids { endpoint stash_id }
               tags { id name }
               custom_fields
+              scene_count(depth: 0) image_count(depth: 0)
+              gallery_count(depth: 0) group_count(depth: 0)
             }
           }
         }
         """
         return self._paged(query, "findStudios", "studios")
+
+    def galleries(self) -> List[Dict[str, Any]]:
+        query = """
+        query MigratorGalleries($filter: FindFilterType) {
+          findGalleries(filter: $filter) {
+            count
+            galleries {
+              id title code urls date details photographer rating100 organized
+              files { id path fingerprints { type value } }
+              folder { id path }
+              chapters { id title image_index }
+              studio { id name aliases }
+              tags { id name aliases }
+              performers { id name alias_list }
+              scenes { id }
+              custom_fields
+            }
+          }
+        }
+        """
+        return self._paged(query, "findGalleries", "galleries")
+
+    def groups(self) -> List[Dict[str, Any]]:
+        query = """
+        query MigratorGroups($filter: FindFilterType) {
+          findGroups(filter: $filter) {
+            count
+            groups {
+              id name aliases duration date rating100 director synopsis urls
+              studio { id name aliases }
+              tags { id name aliases }
+              sub_groups { group { id name aliases } description }
+              containing_groups { group { id name aliases } description }
+              front_image_path
+              back_image_path
+              scene_count(depth: 0)
+              custom_fields
+            }
+          }
+        }
+        """
+        return self._paged(query, "findGroups", "groups")
+
+    def backup_database(self) -> Optional[str]:
+        query = """
+        mutation MigratorBackupDatabase($input: BackupDatabaseInput!) {
+          backupDatabase(input: $input)
+        }
+        """
+        return self.gql(
+            query,
+            {"input": {"download": False, "includeBlobs": False}},
+        ).get("backupDatabase")
 
     def _paged(self, query: str, root: str, collection: str) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -312,6 +380,320 @@ class Stash:
         }
         """
         self.gql(query, {"id": str(scene_id), "times": times})
+
+    def update_tag_aliases(self, tag_id: str, aliases: List[str]) -> Dict[str, Any]:
+        query = """
+        mutation MigratorUpdateTagAliases($input: TagUpdateInput!) {
+          tagUpdate(input: $input) { id name aliases }
+        }
+        """
+        result = self.gql(
+            query,
+            {"input": {"id": str(tag_id), "aliases": [str(v) for v in aliases if str(v).strip()]}},
+        ).get("tagUpdate")
+        if not result:
+            raise RuntimeError("tagUpdate returned no Tag")
+        return result
+
+    def merge_tags(self, source_ids: List[str], destination_id: str) -> Dict[str, Any]:
+        sources = [str(v) for v in source_ids if str(v)]
+        destination = str(destination_id)
+        if not sources or not destination or destination in sources:
+            raise ValueError("Invalid tag merge source/destination")
+        query = """
+        mutation MigratorMergeTags($input: TagsMergeInput!) {
+          tagsMerge(input: $input) { id name aliases }
+        }
+        """
+        result = self.gql(
+            query,
+            {"input": {"source": sources, "destination": destination}},
+        ).get("tagsMerge")
+        if not result:
+            raise RuntimeError("tagsMerge returned no Tag")
+        return result
+
+    def merge_performers(
+        self,
+        source_ids: List[str],
+        destination_id: str,
+        values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        sources = [str(v) for v in source_ids if str(v)]
+        destination = str(destination_id)
+        if not sources or not destination or destination in sources:
+            raise ValueError("Invalid performer merge source/destination")
+        merged_values = dict(values or {})
+        merged_values["id"] = destination
+        query = """
+        mutation MigratorMergePerformers($input: PerformerMergeInput!) {
+          performerMerge(input: $input) {
+            id name disambiguation alias_list urls gender birthdate ethnicity country
+            eye_color height_cm measurements fake_tits penis_length circumcised
+            career_start career_end tattoos piercings favorite rating100 details
+            death_date hair_color weight ignore_auto_tag image_path
+            stash_ids { endpoint stash_id }
+            tags { id name }
+            custom_fields
+            scene_count image_count gallery_count group_count
+          }
+        }
+        """
+        result = self.gql(
+            query,
+            {"input": {"source": sources, "destination": destination, "values": merged_values}},
+        ).get("performerMerge")
+        if not result:
+            raise RuntimeError("performerMerge returned no Performer")
+        return result
+
+    def _ids_with_studios(
+        self,
+        source_ids: List[str],
+        *,
+        root: str,
+        collection: str,
+        filter_type: str,
+        filter_arg: str,
+    ) -> List[str]:
+        out: List[str] = []
+        page = 1
+        per_page = 500
+        query = f"""
+        query MigratorObjectsByStudio($filter: FindFilterType, $object_filter: {filter_type}) {{
+          {root}(filter: $filter, {filter_arg}: $object_filter) {{
+            count
+            {collection} {{ id }}
+          }}
+        }}
+        """
+        object_filter = {
+            "studios": {
+                "value": [str(value) for value in source_ids],
+                "modifier": "INCLUDES",
+                "depth": 0,
+            }
+        }
+        while True:
+            data = self.gql(query, {
+                "filter": {"page": page, "per_page": per_page},
+                "object_filter": object_filter,
+            })[root]
+            batch = data[collection]
+            out.extend(str(item["id"]) for item in batch)
+            if page * per_page >= int(data["count"]) or not batch:
+                break
+            page += 1
+        return out
+
+    def _bulk_assign_studio(
+        self,
+        ids: List[str],
+        destination_id: str,
+        *,
+        mutation: str,
+        input_type: str,
+    ) -> None:
+        for offset in range(0, len(ids), 250):
+            batch = ids[offset:offset + 250]
+            if not batch:
+                continue
+            query = f"""
+            mutation MigratorAssignStudio($input: {input_type}!) {{
+              {mutation}(input: $input) {{ id }}
+            }}
+            """
+            self.gql(query, {"input": {"ids": batch, "studio_id": str(destination_id)}})
+
+    def merge_studios(
+        self,
+        source_ids: List[str],
+        destination_id: str,
+        values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        sources = [str(v) for v in source_ids if str(v)]
+        destination = str(destination_id)
+        if not sources or not destination or destination in sources:
+            raise ValueError("Invalid studio merge source/destination")
+
+        pre_values = {"id": destination}
+        for key in ("urls", "tag_ids"):
+            if key in values:
+                pre_values[key] = values[key]
+        if len(pre_values) > 1:
+            self.gql(
+                """mutation MigratorPrepareStudio($input: StudioUpdateInput!) {
+                     studioUpdate(input: $input) { id }
+                   }""",
+                {"input": pre_values},
+            )
+
+        specs = (
+            ("findScenes", "scenes", "SceneFilterType", "scene_filter", "bulkSceneUpdate", "BulkSceneUpdateInput"),
+            ("findImages", "images", "ImageFilterType", "image_filter", "bulkImageUpdate", "BulkImageUpdateInput"),
+            ("findGalleries", "galleries", "GalleryFilterType", "gallery_filter", "bulkGalleryUpdate", "BulkGalleryUpdateInput"),
+            ("findGroups", "groups", "GroupFilterType", "group_filter", "bulkGroupUpdate", "BulkGroupUpdateInput"),
+        )
+        collected = []
+        for root, collection, filter_type, filter_arg, mutation, input_type in specs:
+            ids = self._ids_with_studios(
+                sources,
+                root=root,
+                collection=collection,
+                filter_type=filter_type,
+                filter_arg=filter_arg,
+            )
+            collected.append((ids, mutation, input_type))
+
+        for ids, mutation, input_type in collected:
+            self._bulk_assign_studio(ids, destination, mutation=mutation, input_type=input_type)
+
+        for source_id in sources:
+            result = self.gql(
+                """mutation MigratorDestroyStudio($input: StudioDestroyInput!) {
+                     studioDestroy(input: $input)
+                   }""",
+                {"input": {"id": source_id}},
+            ).get("studioDestroy")
+            if result is not True:
+                raise RuntimeError(f"Stash did not confirm Studio deletion {source_id}")
+
+        final_values = dict(values or {})
+        final_values["id"] = destination
+        updated = self.gql(
+            """mutation MigratorFinalizeStudio($input: StudioUpdateInput!) {
+                 studioUpdate(input: $input) {
+                   id name aliases urls rating100 favorite details ignore_auto_tag organized image_path
+                   parent_studio { id name }
+                   child_studios { id name }
+                   stash_ids { endpoint stash_id }
+                   tags { id name }
+                   custom_fields
+                   scene_count(depth: 0) image_count(depth: 0)
+                   gallery_count(depth: 0) group_count(depth: 0)
+                 }
+               }""",
+            {"input": final_values},
+        ).get("studioUpdate")
+        if not updated:
+            raise RuntimeError("Final Studio update returned no Studio")
+        return updated
+
+    def create_gallery(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        query = """
+        mutation MigratorCreateGallery($input: GalleryCreateInput!) {
+          galleryCreate(input: $input) {
+            id title code urls date details photographer rating100 organized
+            files { id path fingerprints { type value } }
+            folder { id path }
+            chapters { id title image_index }
+            studio { id name aliases }
+            tags { id name aliases }
+            performers { id name alias_list }
+            scenes { id }
+            custom_fields
+          }
+        }
+        """
+        result = self.gql(query, {"input": input_data}).get("galleryCreate")
+        if not result:
+            raise RuntimeError("galleryCreate returned no Gallery")
+        return result
+
+    def update_gallery(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        query = """
+        mutation MigratorUpdateGallery($input: GalleryUpdateInput!) {
+          galleryUpdate(input: $input) {
+            id title code urls date details photographer rating100 organized
+            files { id path fingerprints { type value } }
+            folder { id path }
+            chapters { id title image_index }
+            studio { id name aliases }
+            tags { id name aliases }
+            performers { id name alias_list }
+            scenes { id }
+            custom_fields
+          }
+        }
+        """
+        result = self.gql(query, {"input": input_data}).get("galleryUpdate")
+        if not result:
+            raise RuntimeError("galleryUpdate returned no Gallery")
+        return result
+
+    def create_gallery_chapter(self, gallery_id: str, title: str, image_index: int) -> Dict[str, Any]:
+        query = """
+        mutation MigratorCreateGalleryChapter($input: GalleryChapterCreateInput!) {
+          galleryChapterCreate(input: $input) { id title image_index }
+        }
+        """
+        result = self.gql(
+            query,
+            {"input": {"gallery_id": str(gallery_id), "title": str(title), "image_index": int(image_index)}},
+        ).get("galleryChapterCreate")
+        if not result:
+            raise RuntimeError("galleryChapterCreate returned no GalleryChapter")
+        return result
+
+    def create_group(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        query = """
+        mutation MigratorCreateGroup($input: GroupCreateInput!) {
+          groupCreate(input: $input) {
+            id name aliases duration date rating100 director synopsis urls
+            studio { id name aliases }
+            tags { id name aliases }
+            sub_groups { group { id name aliases } description }
+            containing_groups { group { id name aliases } description }
+            front_image_path back_image_path scene_count(depth: 0) custom_fields
+          }
+        }
+        """
+        result = self.gql(query, {"input": input_data}).get("groupCreate")
+        if not result:
+            raise RuntimeError("groupCreate returned no Group")
+        return result
+
+    def update_group(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        query = """
+        mutation MigratorUpdateGroup($input: GroupUpdateInput!) {
+          groupUpdate(input: $input) {
+            id name aliases duration date rating100 director synopsis urls
+            studio { id name aliases }
+            tags { id name aliases }
+            sub_groups { group { id name aliases } description }
+            containing_groups { group { id name aliases } description }
+            front_image_path back_image_path scene_count(depth: 0) custom_fields
+          }
+        }
+        """
+        result = self.gql(query, {"input": input_data}).get("groupUpdate")
+        if not result:
+            raise RuntimeError("groupUpdate returned no Group")
+        return result
+
+    def create_scene_marker(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        query = """
+        mutation MigratorCreateSceneMarker($input: SceneMarkerCreateInput!) {
+          sceneMarkerCreate(input: $input) {
+            id title seconds end_seconds
+            primary_tag { id name }
+            tags { id name }
+          }
+        }
+        """
+        result = self.gql(query, {"input": input_data}).get("sceneMarkerCreate")
+        if not result:
+            raise RuntimeError("sceneMarkerCreate returned no SceneMarker")
+        return result
+
+    def increment_image_o(self, image_id: str, count: int) -> None:
+        query = """
+        mutation MigratorIncrementImageO($id: ID!) {
+          imageIncrementO(id: $id)
+        }
+        """
+        for _ in range(max(0, int(count))):
+            self.gql(query, {"id": str(image_id)})
 
     def update_image(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         query = """
