@@ -66,6 +66,14 @@ class FakeStash(Stash):
                     }
                 }
             raise AssertionError("Unexpected extra cleanup page")
+        if "UpdateTagAliases" in query:
+            return {
+                "tagUpdate": {
+                    "id": variables["input"]["id"],
+                    "name": "tag_one",
+                    "aliases": variables["input"]["aliases"],
+                }
+            }
         if "MergeTags" in query:
             return {
                 "tagsMerge": {
@@ -87,6 +95,17 @@ class StashTagCleanupClientTests(unittest.TestCase):
         self.assertIn("parents { id }", query)
         self.assertIn("image_count", query)
         self.assertEqual(variables["filter"]["per_page"], 250)
+
+    def test_update_tag_aliases_replaces_alias_list(self):
+        stash = FakeStash()
+        updated = stash.update_tag_aliases("1", ["old name", "other"])
+        self.assertEqual(updated["aliases"], ["old name", "other"])
+        query, variables = stash.calls[-1]
+        self.assertIn("tagUpdate", query)
+        self.assertEqual(
+            variables["input"],
+            {"id": "1", "aliases": ["old name", "other"]},
+        )
 
     def test_merge_tags_uses_native_tags_merge_mutation(self):
         stash = FakeStash()

@@ -64,7 +64,7 @@ from constants import (
     VERSION, VISUAL_SEARCH_MAX_UPLOAD_BYTES,
 )
 from stash_client import Stash
-from tag_cleanup import TagCleanupCandidate, build_tag_cleanup_plan
+from tag_cleanup import TagCleanupCandidate, build_tag_cleanup_plan, native_merge_alias_preflight
 from entity_cleanup import EntityCleanupCandidate, build_entity_cleanup_plan, merged_entity_values
 
 # Per-process provider state. SauceNAO publishes account-specific quota fields in
@@ -4760,8 +4760,51 @@ def run_tag_cleanup(stash: Stash, args: Dict[str, Any]) -> Dict[str, Any]:
         f"group(s) eligible; {len(plan.review)} review-only candidate(s) "
         "will not be touched.",
     )
+
+    tags_by_id = {
+        str(tag.get("id") or ""): tag
+        for tag in tags
+        if str(tag.get("id") or "")
+    }
+
+    stats["alias_collisions_cleared"] = 0
+    stats["external_alias_conflicts_skipped"] = 0
+
     for candidate in plan.safe_merges:
         try:
+            # Stash v0.31.1 inserts each source tag name into tag_aliases before
+            # moving source aliases. tag_aliases.alias is globally UNIQUE, so
+            # preflight aliases before calling the native merge.
+            alias_removals, external_conflicts = native_merge_alias_preflight(
+                tags,
+                candidate,
+            )
+
+            if external_conflicts:
+                stats["external_alias_conflicts_skipped"] += 1
+                details = ", ".join(
+                    f"'{alias}' is already an alias of '{owner}'"
+                    for alias, owner in external_conflicts
+                )
+                log(
+                    "WARNING",
+                    f"Skipped automatic merge into '{candidate.destination_name}' "
+                    f"because an unrelated tag owns a source-name alias: {details}. "
+                    "Leaving this group for manual review.",
+                )
+                continue
+
+            for owner_id, remove_keys in alias_removals.items():
+                owner = tags_by_id.get(owner_id) or {}
+                existing_aliases = [
+                    str(alias)
+                    for alias in (owner.get("aliases") or [])
+                    if str(alias or "").casefold().strip() not in remove_keys
+                ]
+                stash.update_tag_aliases(owner_id, existing_aliases)
+                owner["aliases"] = existing_aliases
+                stats["alias_collisions_cleared"] += len(remove_keys)
+
             stash.merge_tags(
                 list(candidate.source_ids),
                 candidate.destination_id,

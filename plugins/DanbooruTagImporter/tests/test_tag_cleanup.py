@@ -6,7 +6,7 @@ PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
-from tag_cleanup import build_tag_cleanup_plan
+from tag_cleanup import TagCleanupCandidate, build_tag_cleanup_plan, native_merge_alias_preflight
 
 
 def make_tag(tag_id, name, **overrides):
@@ -150,6 +150,72 @@ class TagCleanupTests(unittest.TestCase):
         ])
         self.assertEqual(len(plan.safe_merges), 1)
         self.assertEqual(plan.safe_merges[0].destination_id, "1")
+
+    def test_native_merge_preflight_clears_alias_owned_inside_group(self):
+        tags = [
+            {
+                "id": "1", "name": "zootopia", "aliases": ["Zootopia"],
+                "description": "", "sort_name": None, "ignore_auto_tag": False,
+                "favorite": False, "image_path": None, "custom_fields": {},
+                "scene_count": 10, "scene_marker_count": 0, "image_count": 0,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0, "parents": [], "children": [],
+            },
+            {
+                "id": "2", "name": "Zootopia", "aliases": [],
+                "description": "", "sort_name": None, "ignore_auto_tag": False,
+                "favorite": False, "image_path": None, "custom_fields": {},
+                "scene_count": 1, "scene_marker_count": 0, "image_count": 0,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0, "parents": [], "children": [],
+            },
+        ]
+        plan = build_tag_cleanup_plan(tags, fuzzy_threshold=0.96)
+        candidate = plan.safe_merges[0]
+        removals, conflicts = native_merge_alias_preflight(tags, candidate)
+        self.assertEqual(removals, {"1": ("zootopia",)})
+        self.assertEqual(conflicts, ())
+
+    def test_native_merge_preflight_blocks_external_alias_owner(self):
+        tags = [
+            {
+                "id": "1", "name": "white_thighhighs", "aliases": [],
+                "description": "", "sort_name": None, "ignore_auto_tag": False,
+                "favorite": False, "image_path": None, "custom_fields": {},
+                "scene_count": 10, "scene_marker_count": 0, "image_count": 0,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0, "parents": [], "children": [],
+            },
+            {
+                "id": "2", "name": "white thighhighs", "aliases": [],
+                "description": "", "sort_name": None, "ignore_auto_tag": False,
+                "favorite": False, "image_path": None, "custom_fields": {},
+                "scene_count": 1, "scene_marker_count": 0, "image_count": 0,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0, "parents": [], "children": [],
+            },
+            {
+                "id": "99", "name": "unrelated", "aliases": ["white thighhighs"],
+                "description": "", "sort_name": None, "ignore_auto_tag": False,
+                "favorite": False, "image_path": None, "custom_fields": {},
+                "scene_count": 0, "scene_marker_count": 0, "image_count": 0,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0, "parents": [], "children": [],
+            },
+        ]
+        candidate = TagCleanupCandidate(
+            destination_id="1",
+            destination_name="white_thighhighs",
+            source_ids=("2",),
+            source_names=("white thighhighs",),
+            score=1.0,
+            kind="normalized-format",
+            reason="test",
+            auto_merge=True,
+        )
+        removals, conflicts = native_merge_alias_preflight(tags, candidate)
+        self.assertEqual(removals, {})
+        self.assertEqual(conflicts, (("white thighhighs", "unrelated"),))
 
 
 if __name__ == "__main__":
