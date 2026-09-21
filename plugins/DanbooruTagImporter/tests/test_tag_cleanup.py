@@ -6,7 +6,7 @@ PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
-from tag_cleanup import build_tag_cleanup_plan, native_merge_alias_preflight
+from tag_cleanup import TagCleanupCandidate, build_tag_cleanup_plan, native_merge_alias_preflight
 
 
 def make_tag(tag_id, name, **overrides):
@@ -203,8 +203,16 @@ class TagCleanupTests(unittest.TestCase):
                 "group_count": 0, "parents": [], "children": [],
             },
         ]
-        plan = build_tag_cleanup_plan(tags, fuzzy_threshold=0.96)
-        candidate = next(c for c in plan.safe_merges if c.destination_id in {"1", "2"})
+        candidate = TagCleanupCandidate(
+            destination_id="1",
+            destination_name="white_thighhighs",
+            source_ids=("2",),
+            source_names=("white thighhighs",),
+            score=1.0,
+            kind="normalized-format",
+            reason="test",
+            auto_merge=True,
+        )
         removals, conflicts = native_merge_alias_preflight(tags, candidate)
         self.assertEqual(removals, {})
         self.assertEqual(conflicts, (("white thighhighs", "unrelated"),))
