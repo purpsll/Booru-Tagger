@@ -686,14 +686,32 @@ class Stash:
             raise RuntimeError("sceneMarkerCreate returned no SceneMarker")
         return result
 
-    def increment_image_o(self, image_id: str, count: int) -> None:
+    def update_scene_marker(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         query = """
-        mutation MigratorIncrementImageO($id: ID!) {
-          imageIncrementO(id: $id)
+        mutation MigratorUpdateSceneMarker($input: SceneMarkerUpdateInput!) {
+          sceneMarkerUpdate(input: $input) {
+            id title seconds end_seconds
+            primary_tag { id name }
+            tags { id name }
+          }
         }
         """
-        for _ in range(max(0, int(count))):
+        result = self.gql(query, {"input": input_data}).get("sceneMarkerUpdate")
+        if not result:
+            raise RuntimeError("sceneMarkerUpdate returned no SceneMarker")
+        return result
+
+    def increment_image_o(self, image_id: str, count: int) -> None:
+        remaining = max(0, int(count))
+        while remaining:
+            batch = min(remaining, 100)
+            fields = "\n".join(
+                f"o{index}: imageIncrementO(id: $id)"
+                for index in range(batch)
+            )
+            query = "mutation MigratorIncrementImageO($id: ID!) {\n" + fields + "\n}"
             self.gql(query, {"id": str(image_id)})
+            remaining -= batch
 
     def update_image(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         query = """
