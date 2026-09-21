@@ -21,13 +21,21 @@ from migration_core import (
     merge_stash_ids,
     merge_strings,
     normalize_name,
+    normalized_path,
     open_export_source,
     scalar_fill,
     source_name_map,
 )
 from stash_client import Stash
+from dedup import (
+    merged_entity_values,
+    safe_formatting_merge,
+    tag_alias_preflight,
+)
 
 
+TAG_THRESHOLD = 0.96
+TAG_MARGIN = 0.02
 PERFORMER_THRESHOLD = 0.98
 PERFORMER_MARGIN = 0.03
 STUDIO_THRESHOLD = 0.96
@@ -84,6 +92,11 @@ def _custom_field_delta(current: Any, old: Any) -> Dict[str, Any]:
     current_map = current if isinstance(current, dict) else {}
     old_map = old if isinstance(old, dict) else {}
     return {key: value for key, value in old_map.items() if key not in current_map}
+
+
+def _has_custom_image(image_path: Any) -> bool:
+    path = str(image_path or "").strip()
+    return bool(path and "default=true" not in path.casefold())
 
 
 def _same_endpoint_identity_conflict(
@@ -152,6 +165,10 @@ class MigrationEngine:
         self.old_tags = load_json_files(root / "tags")
         self.old_performers = load_json_files(root / "performers")
         self.old_studios = load_json_files(root / "studios")
+        self.old_galleries = load_json_files(root / "galleries")
+        self.old_groups = load_json_files(root / "groups")
+        if not self.old_groups:
+            self.old_groups = load_json_files(root / "movies")
         self.old_scenes = load_json_files(root / "scenes")
         self.old_images = load_json_files(root / "images")
         self.old_files = build_old_file_index(root)
@@ -159,6 +176,7 @@ class MigrationEngine:
         self.old_tags_by_name = source_name_map(self.old_tags)
         self.old_performers_by_name = source_name_map(self.old_performers)
         self.old_studios_by_name = source_name_map(self.old_studios)
+        self.old_groups_by_name = source_name_map(self.old_groups)
 
         performer_name_counts: Dict[str, int] = {}
         for performer in self.old_performers:
@@ -173,19 +191,34 @@ class MigrationEngine:
         self.tags = stash.tags()
         self.performers = stash.performers()
         self.studios = stash.studios()
+        self.galleries = stash.galleries()
+        self.groups = stash.groups()
         self.scenes = stash.scenes()
         self.images = stash.images()
 
         self.scenes_by_id = {str(item["id"]): item for item in self.scenes}
         self.images_by_id = {str(item["id"]): item for item in self.images}
+        self.galleries_by_id = {str(item["id"]): item for item in self.galleries}
+        self.groups_by_id = {str(item["id"]): item for item in self.groups}
 
         self.scene_fp_index, self.scene_path_index = build_current_media_indexes(self.scenes)
         self.image_fp_index, self.image_path_index = build_current_media_indexes(self.images)
+        self.gallery_fp_index, self.gallery_path_index = build_current_media_indexes(self.galleries)
+        self.gallery_folder_index: Dict[str, List[str]] = {}
+        for gallery in self.galleries:
+            folder = gallery.get("folder") or {}
+            folder_path = str(folder.get("path") or "").strip()
+            if folder_path:
+                self.gallery_folder_index.setdefault(normalized_path(folder_path), []).append(str(gallery["id"]))
 
         self.resolved_tags: Dict[str, Optional[str]] = {}
         self.resolved_performers: Dict[str, Optional[str]] = {}
         self.resolved_studios: Dict[str, Optional[str]] = {}
+        self.resolved_galleries: Dict[str, Optional[str]] = {}
+        self.resolved_groups: Dict[str, Optional[str]] = {}
+        self.inferred_gallery_map: Dict[str, str] = {}
         self._studio_resolution_stack = set()
+        self._group_resolution_stack = set()
 
         self.stats: Dict[str, int] = {
             "source_files": len(self.old_files),
@@ -194,6 +227,8 @@ class MigrationEngine:
             "source_tags": len(self.old_tags),
             "source_performers": len(self.old_performers),
             "source_studios": len(self.old_studios),
+            "source_galleries": len(self.old_galleries),
+            "source_groups": len(self.old_groups),
             "matched_scenes": 0,
             "matched_images": 0,
             "updated_scenes": 0,
@@ -206,11 +241,27 @@ class MigrationEngine:
             "created_tags": 0,
             "created_performers": 0,
             "created_studios": 0,
+            "created_galleries": 0,
+            "created_groups": 0,
             "reused_tags": 0,
             "reused_performers": 0,
             "reused_studios": 0,
+            "reused_galleries": 0,
+            "reused_groups": 0,
+            "fuzzy_tag_reuse": 0,
             "fuzzy_performer_reuse": 0,
             "fuzzy_studio_reuse": 0,
+            "merged_duplicate_tags": 0,
+            "merged_duplicate_performers": 0,
+            "merged_duplicate_studios": 0,
+            "gallery_chapters_created": 0,
+            "scene_markers_created": 0,
+            "scene_markers_updated": 0,
+            "image_o_increments": 0,
+            "entity_images_restored": 0,
+            "tag_parent_links_added": 0,
+            "unresolved_galleries": 0,
+            "ambiguous_galleries": 0,
             "entity_identity_conflicts": 0,
             "ambiguous_entities_skipped": 0,
             "errors": 0,
@@ -218,6 +269,113 @@ class MigrationEngine:
 
     def _source_entity(self, mapping: Dict[str, Dict[str, Any]], name: str) -> Dict[str, Any]:
         return mapping.get(str(name or "").casefold(), {"name": name})
+
+    def _remove_merged_entities(
+        self,
+        collection: List[Dict[str, Any]],
+        source_ids: Iterable[str],
+    ) -> None:
+        remove = {str(value) for value in source_ids}
+        collection[:] = [
+            entity for entity in collection
+            if str(entity.get("id") or "") not in remove
+        ]
+
+    def _safe_merge_ambiguous_tag(self, name: str) -> Optional[Dict[str, Any]]:
+        merge = safe_formatting_merge(
+            name, self.tags, kind="tag", alias_field="aliases"
+        )
+        if not merge:
+            return None
+        by_id = {str(tag.get("id") or ""): tag for tag in self.tags}
+        destination = by_id.get(merge.destination_id)
+        if not destination:
+            return None
+        removals, conflicts = tag_alias_preflight(self.tags, merge)
+        if conflicts:
+            return None
+        if self.dry_run:
+            self.stats["merged_duplicate_tags"] += len(merge.source_ids)
+            return destination
+
+        for owner_id, remove_keys in removals.items():
+            owner = by_id.get(owner_id) or {}
+            aliases = [
+                str(alias)
+                for alias in (owner.get("aliases") or [])
+                if str(alias or "").casefold().strip() not in set(remove_keys)
+            ]
+            updated = self.stash.update_tag_aliases(owner_id, aliases)
+            owner["aliases"] = updated.get("aliases") or aliases
+
+        merged = self.stash.merge_tags(list(merge.source_ids), merge.destination_id)
+        destination.update(merged)
+        self._remove_merged_entities(self.tags, merge.source_ids)
+        self.stats["merged_duplicate_tags"] += len(merge.source_ids)
+        log(
+            "INFO",
+            f"Merged {len(merge.source_ids)} safe duplicate Tag(s) into "
+            f"'{merge.destination_name}' while resolving old metadata.",
+        )
+        return destination
+
+    def _safe_merge_ambiguous_performer(self, name: str) -> Optional[Dict[str, Any]]:
+        merge = safe_formatting_merge(
+            name, self.performers, kind="performer", alias_field="alias_list"
+        )
+        if not merge:
+            return None
+        by_id = {str(entity.get("id") or ""): entity for entity in self.performers}
+        destination = by_id.get(merge.destination_id)
+        if not destination:
+            return None
+        if self.dry_run:
+            self.stats["merged_duplicate_performers"] += len(merge.source_ids)
+            return destination
+        values = merged_entity_values(
+            self.performers, merge, alias_field="alias_list"
+        )
+        merged = self.stash.merge_performers(
+            list(merge.source_ids), merge.destination_id, values
+        )
+        self._remove_merged_entities(self.performers, merge.source_ids)
+        self._replace_entity(self.performers, merged)
+        self.stats["merged_duplicate_performers"] += len(merge.source_ids)
+        log(
+            "INFO",
+            f"Merged {len(merge.source_ids)} safe duplicate Performer(s) into "
+            f"'{merge.destination_name}' while resolving old metadata.",
+        )
+        return merged
+
+    def _safe_merge_ambiguous_studio(self, name: str) -> Optional[Dict[str, Any]]:
+        merge = safe_formatting_merge(
+            name, self.studios, kind="studio", alias_field="aliases"
+        )
+        if not merge:
+            return None
+        by_id = {str(entity.get("id") or ""): entity for entity in self.studios}
+        destination = by_id.get(merge.destination_id)
+        if not destination:
+            return None
+        if self.dry_run:
+            self.stats["merged_duplicate_studios"] += len(merge.source_ids)
+            return destination
+        values = merged_entity_values(
+            self.studios, merge, alias_field="aliases"
+        )
+        merged = self.stash.merge_studios(
+            list(merge.source_ids), merge.destination_id, values
+        )
+        self._remove_merged_entities(self.studios, merge.source_ids)
+        self._replace_entity(self.studios, merged)
+        self.stats["merged_duplicate_studios"] += len(merge.source_ids)
+        log(
+            "INFO",
+            f"Merged {len(merge.source_ids)} safe duplicate Studio(s) into "
+            f"'{merge.destination_name}' while resolving old metadata.",
+        )
+        return merged
 
     def resolve_tag(self, name: str) -> Optional[str]:
         key = normalize_name(name)
@@ -230,17 +388,40 @@ class MigrationEngine:
             name,
             self.tags,
             alias_field="aliases",
-            allow_fuzzy=False,
-            threshold=1.0,
-            margin=1.0,
+            allow_fuzzy=True,
+            threshold=TAG_THRESHOLD,
+            margin=TAG_MARGIN,
         )
         source = self._source_entity(self.old_tags_by_name, name)
         if decision.ambiguous:
-            self.stats["ambiguous_entities_skipped"] += 1
-            log("WARNING", f"Tag '{name}' has ambiguous current matches; relationship skipped.")
-            self.resolved_tags[key] = None
-            return None
-        match = decision.match
+            merged_entity = self._safe_merge_ambiguous_tag(name)
+            if merged_entity is None:
+                self.stats["ambiguous_entities_skipped"] += 1
+                log("WARNING", f"Tag '{name}' has ambiguous current matches that cannot be safely collapsed; relationship skipped.")
+                self.resolved_tags[key] = None
+                return None
+            match = type("_Match", (), {
+                "entity": merged_entity,
+                "kind": "safe-duplicate-merge",
+                "score": 1.0,
+                "second_score": 0.0,
+            })()
+        else:
+            match = decision.match
+        if match and match.kind == "fuzzy":
+            source_tokens = set(normalize_name(name).split())
+            target_tokens = set(normalize_name(str(match.entity.get("name") or "")).split())
+            if source_tokens and target_tokens and (
+                source_tokens < target_tokens or target_tokens < source_tokens
+            ):
+                match = None
+            else:
+                self.stats["fuzzy_tag_reuse"] += 1
+                log(
+                    "INFO",
+                    f"Tag fuzzy reuse: '{name}' -> '{match.entity.get('name')}' "
+                    f"({match.score * 100:.1f}%, next {match.second_score * 100:.1f}%).",
+                )
         if match and _same_endpoint_identity_conflict(
             match.entity.get("stash_ids") or [], source.get("stash_ids") or []
         ):
@@ -283,6 +464,9 @@ class MigrationEngine:
             value = str(source.get(src) or "").strip()
             if value:
                 data[dst] = value
+        if source.get("image"):
+            data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
         if isinstance(source.get("custom_fields"), dict) and source["custom_fields"]:
             data["custom_fields"] = source["custom_fields"]
         return data
@@ -312,6 +496,9 @@ class MigrationEngine:
             input_data["sort_name"] = sort_name
         if description:
             input_data["description"] = description
+        if not _has_custom_image(current.get("image_path")) and source.get("image"):
+            input_data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
         if delta:
             input_data["custom_fields"] = {"partial": delta}
         return self.stash.update_tag(input_data)
@@ -345,11 +532,20 @@ class MigrationEngine:
         )
         source = self._source_entity(self.old_performers_by_name, name)
         if decision.ambiguous:
-            self.stats["ambiguous_entities_skipped"] += 1
-            log("WARNING", f"Performer '{name}' has ambiguous current matches; relationship skipped.")
-            self.resolved_performers[key] = None
-            return None
-        match = decision.match
+            merged_entity = self._safe_merge_ambiguous_performer(name)
+            if merged_entity is None:
+                self.stats["ambiguous_entities_skipped"] += 1
+                log("WARNING", f"Performer '{name}' has ambiguous current matches that cannot be safely collapsed; relationship skipped.")
+                self.resolved_performers[key] = None
+                return None
+            match = type("_Match", (), {
+                "entity": merged_entity,
+                "kind": "safe-duplicate-merge",
+                "score": 1.0,
+                "second_score": 0.0,
+            })()
+        else:
+            match = decision.match
         if match:
             current_disambiguation = str(match.entity.get("disambiguation") or "").casefold().strip()
             source_disambiguation = str(source.get("disambiguation") or "").casefold().strip()
@@ -483,6 +679,12 @@ class MigrationEngine:
         if tag_ids:
             data["tag_ids"] = _unique_ids(tag_ids)
 
+        if source.get("image") and (not current or not _has_custom_image(current.get("image_path"))):
+            data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
+        if source.get("image") and (not current or not _has_custom_image(current.get("image_path"))):
+            data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
         custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
         if current:
             if custom_delta:
@@ -522,11 +724,20 @@ class MigrationEngine:
             )
             source = self._source_entity(self.old_studios_by_name, name)
             if decision.ambiguous:
-                self.stats["ambiguous_entities_skipped"] += 1
-                log("WARNING", f"Studio '{name}' has ambiguous current matches; relationship skipped.")
-                self.resolved_studios[key] = None
-                return None
-            match = decision.match
+                merged_entity = self._safe_merge_ambiguous_studio(name)
+                if merged_entity is None:
+                    self.stats["ambiguous_entities_skipped"] += 1
+                    log("WARNING", f"Studio '{name}' has ambiguous current matches that cannot be safely collapsed; relationship skipped.")
+                    self.resolved_studios[key] = None
+                    return None
+                match = type("_Match", (), {
+                    "entity": merged_entity,
+                    "kind": "safe-duplicate-merge",
+                    "score": 1.0,
+                    "second_score": 0.0,
+                })()
+            else:
+                match = decision.match
             if match and _same_endpoint_identity_conflict(
                 match.entity.get("stash_ids") or [], source.get("stash_ids") or []
             ):
@@ -641,6 +852,414 @@ class MigrationEngine:
         return self.stash.update_studio(data)
 
     @staticmethod
+    def _group_alias_values(entity: Mapping[str, Any]) -> List[str]:
+        raw = str(entity.get("aliases") or "").strip()
+        if not raw:
+            return []
+        values = [raw]
+        for separator in (";", "\n", ","):
+            if separator in raw:
+                values.extend(part.strip() for part in raw.split(separator))
+        return merge_strings(values)
+
+    @staticmethod
+    def _gallery_relation_key(ref: Mapping[str, Any]) -> str:
+        folder = str(ref.get("folder_path") or "").strip()
+        if folder:
+            return "folder:" + normalized_path(folder)
+        zip_files = sorted(
+            normalized_path(str(v))
+            for v in (ref.get("zip_files") or [])
+            if str(v).strip()
+        )
+        if zip_files:
+            return "zip:" + "|".join(zip_files)
+        title = str(ref.get("title") or "").strip()
+        if title:
+            return "title:" + normalize_name(title)
+        return ""
+
+    def _gallery_cache_key(self, source: Mapping[str, Any]) -> str:
+        relation_key = self._gallery_relation_key(source)
+        if relation_key:
+            return relation_key
+        return str(source.get("_migration_source_file") or "")
+
+    def _old_gallery_for_ref(self, ref: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        folder = str(ref.get("folder_path") or "").strip()
+        zip_files = [str(v) for v in (ref.get("zip_files") or []) if str(v).strip()]
+        title = str(ref.get("title") or "").strip()
+        for source in self.old_galleries:
+            if folder and normalized_path(str(source.get("folder_path") or "")) == normalized_path(folder):
+                return source
+            source_zips = {
+                normalized_path(str(v))
+                for v in (source.get("zip_files") or [])
+                if str(v).strip()
+            }
+            if zip_files and source_zips.intersection(normalized_path(v) for v in zip_files):
+                return source
+            if title and normalize_name(str(source.get("title") or "")) == normalize_name(title):
+                return source
+        return None
+
+    def _match_current_gallery(self, source: Mapping[str, Any]) -> Tuple[Optional[str], str]:
+        inferred = self.inferred_gallery_map.get(self._gallery_relation_key(source))
+        if inferred:
+            return inferred, "media-consensus"
+        zip_files = [str(v) for v in (source.get("zip_files") or []) if str(v).strip()]
+        if zip_files:
+            match = match_old_media(
+                zip_files,
+                self.old_files,
+                self.gallery_fp_index,
+                self.gallery_path_index,
+            )
+            if match.object_id:
+                return match.object_id, match.kind
+            if match.kind == "ambiguous":
+                return None, "ambiguous"
+
+        folder = str(source.get("folder_path") or "").strip()
+        if folder:
+            ids = self.gallery_folder_index.get(normalized_path(folder), [])
+            if len(ids) == 1:
+                return ids[0], "exact-folder"
+            if len(ids) > 1:
+                return None, "ambiguous"
+            return None, "unmatched-file-backed"
+
+        title = str(source.get("title") or "").strip()
+        if title:
+            hits = [
+                str(gallery["id"])
+                for gallery in self.galleries
+                if normalize_name(str(gallery.get("title") or "")) == normalize_name(title)
+            ]
+            if len(hits) == 1:
+                return hits[0], "normalized-title"
+            if len(hits) > 1:
+                return None, "ambiguous"
+        return None, "missing"
+
+    def _gallery_input(
+        self,
+        source: Mapping[str, Any],
+        current: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        current = current or {}
+        data: Dict[str, Any] = {}
+        for src, dst in (
+            ("title", "title"), ("code", "code"), ("date", "date"),
+            ("details", "details"), ("photographer", "photographer"),
+        ):
+            value = scalar_fill(current.get(dst), source.get(src))
+            if value not in (None, ""):
+                data[dst] = value
+        rating = scalar_fill(current.get("rating100"), _clean_int(source.get("rating")))
+        if rating not in (None, "", 0):
+            data["rating100"] = rating
+        data["organized"] = bool(current.get("organized") or source.get("organized"))
+        data["urls"] = merge_strings(
+            current.get("urls") or [], source.get("urls") or [], [source.get("url") or ""]
+        )
+        tag_ids = [str(t.get("id")) for t in (current.get("tags") or []) if t.get("id")]
+        for tag_name in source.get("tags") or []:
+            resolved = self.resolve_tag(str(tag_name))
+            if resolved:
+                tag_ids.append(resolved)
+        if tag_ids:
+            data["tag_ids"] = _unique_ids(tag_ids)
+        performer_ids = [str(p.get("id")) for p in (current.get("performers") or []) if p.get("id")]
+        for performer_name in source.get("performers") or []:
+            resolved = self.resolve_performer(str(performer_name))
+            if resolved:
+                performer_ids.append(resolved)
+        if performer_ids:
+            data["performer_ids"] = _unique_ids(performer_ids)
+        studio_name = str(source.get("studio") or "").strip()
+        if studio_name and not current.get("studio"):
+            studio_id = self.resolve_studio(studio_name)
+            if studio_id:
+                data["studio_id"] = studio_id
+        custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
+        if current:
+            if custom_delta:
+                data["custom_fields"] = {"partial": custom_delta}
+        elif isinstance(source.get("custom_fields"), dict) and source.get("custom_fields"):
+            data["custom_fields"] = source["custom_fields"]
+        return data
+
+    def _restore_gallery_chapters(
+        self,
+        gallery_id: str,
+        source: Mapping[str, Any],
+        current: Mapping[str, Any],
+    ) -> None:
+        existing = {
+            (normalize_name(str(chapter.get("title") or "")), int(chapter.get("image_index") or 0))
+            for chapter in (current.get("chapters") or [])
+        }
+        for chapter in source.get("chapters") or []:
+            title = str(chapter.get("title") or "").strip()
+            index = _clean_int(chapter.get("image_index"))
+            if not title or index is None:
+                continue
+            key = (normalize_name(title), index)
+            if key in existing:
+                continue
+            self.stats["gallery_chapters_created"] += 1
+            if not self.dry_run:
+                self.stash.create_gallery_chapter(gallery_id, title, index)
+            existing.add(key)
+
+    def resolve_gallery_source(self, source: Dict[str, Any]) -> Optional[str]:
+        key = self._gallery_cache_key(source)
+        if key in self.resolved_galleries:
+            return self.resolved_galleries[key]
+        current_id, match_kind = self._match_current_gallery(source)
+        current: Optional[Dict[str, Any]] = None
+        if current_id:
+            current = self.galleries_by_id.get(str(current_id))
+            self.stats["reused_galleries"] += 1
+        elif match_kind == "ambiguous":
+            self.stats["ambiguous_galleries"] += 1
+            log("WARNING", f"Gallery '{source.get('title') or source.get('folder_path') or '(untitled)'}' has multiple current matches; skipped.")
+            self.resolved_galleries[key] = None
+            return None
+        elif source.get("zip_files") or source.get("folder_path"):
+            self.stats["unresolved_galleries"] += 1
+            log("WARNING", f"File-backed Gallery '{source.get('title') or source.get('folder_path') or '(untitled)'}' cannot be matched safely in the new Stash; skipped instead of creating a disconnected Gallery.")
+            self.resolved_galleries[key] = None
+            return None
+        else:
+            title = str(source.get("title") or "").strip()
+            if not title:
+                self.stats["unresolved_galleries"] += 1
+                self.resolved_galleries[key] = None
+                return None
+            self.stats["created_galleries"] += 1
+            if self.dry_run:
+                synthetic = "DRYRUN:GALLERY:" + normalize_name(title)
+                self.resolved_galleries[key] = synthetic
+                return synthetic
+            created = self.stash.create_gallery(self._gallery_input(source))
+            self.galleries.append(created)
+            self.galleries_by_id[str(created["id"])] = created
+            current = created
+            current_id = str(created["id"])
+
+        if current is None or current_id is None:
+            self.resolved_galleries[key] = None
+            return None
+        if not self.dry_run:
+            update = self._gallery_input(source, current)
+            update["id"] = str(current_id)
+            current = self.stash.update_gallery(update)
+            self._replace_entity(self.galleries, current)
+            self.galleries_by_id[str(current_id)] = current
+        self._restore_gallery_chapters(str(current_id), source, current)
+        self.resolved_galleries[key] = str(current_id)
+        return str(current_id)
+
+    def resolve_gallery_ref(self, ref: Mapping[str, Any]) -> Optional[str]:
+        source = self._old_gallery_for_ref(ref)
+        if source is not None:
+            return self.resolve_gallery_source(source)
+        title = str(ref.get("title") or "").strip()
+        if title:
+            hits = [
+                gallery for gallery in self.galleries
+                if normalize_name(str(gallery.get("title") or "")) == normalize_name(title)
+            ]
+            if len(hits) == 1:
+                return str(hits[0]["id"])
+        self.stats["unresolved_galleries"] += 1
+        return None
+
+    def _group_match(self, name: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+        target = normalize_name(name)
+        compact_target = "".join(ch for ch in target if ch.isalnum())
+        hits: List[Dict[str, Any]] = []
+        for group in self.groups:
+            values = [str(group.get("name") or ""), *self._group_alias_values(group)]
+            if any(
+                normalize_name(value) == target
+                or (
+                    len(compact_target) >= 4
+                    and "".join(ch for ch in normalize_name(value) if ch.isalnum()) == compact_target
+                )
+                for value in values
+            ):
+                hits.append(group)
+        if len(hits) == 1:
+            return hits[0], False
+        return None, len(hits) > 1
+
+    def _group_input(
+        self,
+        source: Mapping[str, Any],
+        current: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        current = current or {}
+        data: Dict[str, Any] = {}
+        name = str(source.get("name") or "").strip()
+        if name:
+            data["name"] = str(current.get("name") or name)
+        current_alias = str(current.get("aliases") or "").strip()
+        old_alias = str(source.get("aliases") or "").strip()
+        aliases = merge_strings([current_alias], [old_alias])
+        if aliases:
+            data["aliases"] = "; ".join(aliases)
+        for src, dst in (("date", "date"), ("director", "director"), ("synopsis", "synopsis")):
+            value = scalar_fill(current.get(dst), source.get(src))
+            if value not in (None, ""):
+                data[dst] = value
+        duration = scalar_fill(current.get("duration"), _clean_int(source.get("duration")))
+        if duration not in (None, "", 0):
+            data["duration"] = duration
+        rating = scalar_fill(current.get("rating100"), _clean_int(source.get("rating")))
+        if rating not in (None, "", 0):
+            data["rating100"] = rating
+        data["urls"] = merge_strings(current.get("urls") or [], source.get("urls") or [], [source.get("url") or ""])
+        tag_ids = [str(t.get("id")) for t in (current.get("tags") or []) if t.get("id")]
+        for tag_name in source.get("tags") or []:
+            resolved = self.resolve_tag(str(tag_name))
+            if resolved:
+                tag_ids.append(resolved)
+        if tag_ids:
+            data["tag_ids"] = _unique_ids(tag_ids)
+        studio_name = str(source.get("studio") or "").strip()
+        if studio_name and not current.get("studio"):
+            studio_id = self.resolve_studio(studio_name)
+            if studio_id:
+                data["studio_id"] = studio_id
+        if not current.get("front_image_path") and source.get("front_image"):
+            data["front_image"] = source.get("front_image")
+        if not current.get("back_image_path") and source.get("back_image"):
+            data["back_image"] = source.get("back_image")
+        custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
+        if current:
+            if custom_delta:
+                data["custom_fields"] = {"partial": custom_delta}
+        elif isinstance(source.get("custom_fields"), dict) and source.get("custom_fields"):
+            data["custom_fields"] = source["custom_fields"]
+        return data
+
+    def resolve_group(self, name: str) -> Optional[str]:
+        key = normalize_name(name)
+        if not key:
+            return None
+        if key in self.resolved_groups:
+            return self.resolved_groups[key]
+        if key in self._group_resolution_stack:
+            return None
+        self._group_resolution_stack.add(key)
+        try:
+            source = self._source_entity(self.old_groups_by_name, name)
+            current, ambiguous = self._group_match(name)
+            if ambiguous:
+                self.stats["ambiguous_entities_skipped"] += 1
+                log("WARNING", f"Group '{name}' has ambiguous current matches; relationship skipped.")
+                self.resolved_groups[key] = None
+                return None
+            if current is None:
+                self.stats["created_groups"] += 1
+                if self.dry_run:
+                    synthetic = "DRYRUN:GROUP:" + key
+                    self.resolved_groups[key] = synthetic
+                    return synthetic
+                created = self.stash.create_group(self._group_input(source))
+                self.groups.append(created)
+                self.groups_by_id[str(created["id"])] = created
+                current = created
+            else:
+                self.stats["reused_groups"] += 1
+
+            group_id = str(current["id"])
+            if not self.dry_run:
+                update = self._group_input(source, current)
+                update["id"] = group_id
+                current = self.stash.update_group(update)
+                self._replace_entity(self.groups, current)
+                self.groups_by_id[group_id] = current
+            self.resolved_groups[key] = group_id
+            return group_id
+        finally:
+            self._group_resolution_stack.discard(key)
+
+    def restore_group_hierarchy(self) -> None:
+        for source in self.old_groups:
+            name = str(source.get("name") or "").strip()
+            group_id = self.resolve_group(name)
+            if not group_id or group_id.startswith("DRYRUN:"):
+                continue
+            current = self.groups_by_id.get(group_id) or {}
+            existing: Dict[str, Optional[str]] = {
+                str(item.get("group", {}).get("id") or ""): item.get("description")
+                for item in (current.get("sub_groups") or [])
+                if str(item.get("group", {}).get("id") or "")
+            }
+            changed = False
+            for item in source.get("sub_groups") or []:
+                child_name = str(item.get("name") or "").strip()
+                child_id = self.resolve_group(child_name)
+                if not child_id or child_id == group_id or child_id.startswith("DRYRUN:"):
+                    continue
+                if child_id not in existing:
+                    existing[child_id] = item.get("description")
+                    changed = True
+            if changed and not self.dry_run:
+                self.stash.update_group({
+                    "id": group_id,
+                    "sub_groups": [
+                        {"group_id": child_id, "description": description}
+                        for child_id, description in existing.items()
+                    ],
+                })
+
+    def restore_tag_hierarchy(self) -> None:
+        tags_by_id = {str(tag.get("id") or ""): tag for tag in self.tags}
+        for source in self.old_tags:
+            name = str(source.get("name") or "").strip()
+            tag_id = self.resolve_tag(name)
+            if not tag_id or tag_id.startswith("DRYRUN:"):
+                continue
+            current = tags_by_id.get(tag_id) or {}
+            parent_ids = [
+                str(parent.get("id"))
+                for parent in (current.get("parents") or [])
+                if parent.get("id")
+            ]
+            before = set(parent_ids)
+            for parent_name in source.get("parents") or []:
+                parent_id = self.resolve_tag(str(parent_name))
+                if parent_id and not parent_id.startswith("DRYRUN:") and parent_id != tag_id:
+                    parent_ids.append(parent_id)
+            parent_ids = _unique_ids(parent_ids)
+            added = len(set(parent_ids) - before)
+            if added:
+                self.stats["tag_parent_links_added"] += added
+                if not self.dry_run:
+                    updated = self.stash.update_tag({"id": tag_id, "parent_ids": parent_ids})
+                    self._replace_entity(self.tags, updated)
+                    tags_by_id[tag_id] = updated
+
+    def prepare_metadata_entities(self) -> None:
+        for source in self.old_tags:
+            self.resolve_tag(str(source.get("name") or ""))
+        for source in self.old_performers:
+            self.resolve_performer(str(source.get("name") or ""))
+        for source in self.old_studios:
+            self.resolve_studio(str(source.get("name") or ""))
+        self.restore_tag_hierarchy()
+        for source in self.old_groups:
+            self.resolve_group(str(source.get("name") or ""))
+        for source in self.old_galleries:
+            self.resolve_gallery_source(source)
+        self.restore_group_hierarchy()
+
+    @staticmethod
     def _replace_entity(collection: List[Dict[str, Any]], replacement: Dict[str, Any]) -> None:
         replacement_id = str(replacement.get("id") or "")
         for index, item in enumerate(collection):
@@ -661,6 +1280,79 @@ class MigrationEngine:
             if resolved:
                 ids.append(resolved)
         return _unique_ids(ids)
+
+    def _restore_scene_markers(
+        self,
+        old: Mapping[str, Any],
+        current: Mapping[str, Any],
+    ) -> bool:
+        changed = False
+        existing = list(current.get("scene_markers") or [])
+        for marker in old.get("markers") or []:
+            title = str(marker.get("title") or "").strip()
+            seconds = _clean_float(marker.get("seconds"))
+            if not title or seconds is None:
+                continue
+            primary_name = str(marker.get("primary_tag") or "").strip()
+            primary_id = self.resolve_tag(primary_name) if primary_name else None
+            if not primary_id:
+                continue
+
+            tag_ids: List[str] = []
+            for tag_name in marker.get("tags") or []:
+                tag_id = self.resolve_tag(str(tag_name))
+                if tag_id and not tag_id.startswith("DRYRUN:"):
+                    tag_ids.append(tag_id)
+            tag_ids.append(primary_id)
+            tag_ids = _unique_ids(tag_ids)
+
+            current_marker = next(
+                (
+                    item for item in existing
+                    if normalize_name(str(item.get("title") or "")) == normalize_name(title)
+                    and abs(float(item.get("seconds") or 0.0) - float(seconds)) < 0.001
+                ),
+                None,
+            )
+            end_seconds = _clean_float(marker.get("end_seconds"))
+            if current_marker is None:
+                self.stats["scene_markers_created"] += 1
+                changed = True
+                if not self.dry_run:
+                    created = self.stash.create_scene_marker({
+                        "title": title,
+                        "seconds": seconds,
+                        "end_seconds": end_seconds,
+                        "scene_id": str(current["id"]),
+                        "primary_tag_id": primary_id,
+                        "tag_ids": tag_ids,
+                    })
+                    existing.append(created)
+                continue
+
+            existing_tag_ids = [
+                str(tag.get("id"))
+                for tag in (current_marker.get("tags") or [])
+                if tag.get("id")
+            ]
+            current_primary = current_marker.get("primary_tag") or {}
+            current_primary_id = str(current_primary.get("id") or "")
+            merged_tags = _unique_ids(
+                existing_tag_ids
+                + tag_ids
+                + ([current_primary_id] if current_primary_id else [])
+            )
+            update: Dict[str, Any] = {"id": str(current_marker["id"])}
+            if merged_tags != existing_tag_ids:
+                update["tag_ids"] = merged_tags
+            if current_marker.get("end_seconds") is None and end_seconds is not None:
+                update["end_seconds"] = end_seconds
+            if len(update) > 1:
+                self.stats["scene_markers_updated"] += 1
+                changed = True
+                if not self.dry_run:
+                    self.stash.update_scene_marker(update)
+        return changed
 
     def restore_scene(self, old: Dict[str, Any], current: Dict[str, Any]) -> bool:
         input_data: Dict[str, Any] = {"id": str(current["id"])}
@@ -701,11 +1393,61 @@ class MigrationEngine:
         ]:
             input_data["performer_ids"] = performer_ids
 
+        gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        for ref in old.get("galleries") or []:
+            if isinstance(ref, dict):
+                gallery_id = self.resolve_gallery_ref(ref)
+                if gallery_id:
+                    gallery_ids.append(gallery_id)
+        gallery_ids = _unique_ids(gallery_ids)
+        current_gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        if gallery_ids != current_gallery_ids:
+            input_data["gallery_ids"] = gallery_ids
+
         old_studio = str(old.get("studio") or "").strip()
         if old_studio and not current.get("studio"):
             studio_id = self.resolve_studio(old_studio)
             if studio_id:
                 input_data["studio_id"] = studio_id
+
+        scene_groups: Dict[str, Optional[int]] = {}
+        for relation in current.get("groups") or []:
+            group = relation.get("group") or {}
+            group_id = str(group.get("id") or "")
+            if group_id:
+                scene_groups[group_id] = _clean_int(relation.get("scene_index"))
+        for relation in old.get("movies") or []:
+            if not isinstance(relation, dict):
+                continue
+            group_name = str(relation.get("movieName") or relation.get("groupName") or "").strip()
+            if not group_name:
+                continue
+            group_id = self.resolve_group(group_name)
+            if not group_id:
+                continue
+            old_index = _clean_int(relation.get("scene_index"))
+            if group_id not in scene_groups:
+                scene_groups[group_id] = old_index
+            elif scene_groups[group_id] is None and old_index is not None:
+                scene_groups[group_id] = old_index
+        current_group_map = {
+            str((relation.get("group") or {}).get("id") or ""): _clean_int(relation.get("scene_index"))
+            for relation in (current.get("groups") or [])
+            if str((relation.get("group") or {}).get("id") or "")
+        }
+        if scene_groups != current_group_map:
+            input_data["groups"] = [
+                {"group_id": group_id, "scene_index": scene_index}
+                for group_id, scene_index in scene_groups.items()
+            ]
 
         stash_ids, conflicts = _safe_stash_ids(
             current.get("stash_ids") or [], old.get("stash_ids") or []
@@ -726,37 +1468,28 @@ class MigrationEngine:
         if custom_delta:
             input_data["custom_fields"] = {"partial": custom_delta}
 
-        changed = len(input_data) > 1
-        if changed and not self.dry_run:
+        current_plays = set(str(v) for v in (current.get("play_history") or []))
+        old_plays = [
+            str(v) for v in (old.get("play_history") or [])
+            if str(v) and str(v) not in current_plays
+        ]
+        current_os = set(str(v) for v in (current.get("o_history") or []))
+        old_os = [
+            str(v) for v in (old.get("o_history") or [])
+            if str(v) and str(v) not in current_os
+        ]
+
+        changed = len(input_data) > 1 or bool(old_plays) or bool(old_os)
+        if len(input_data) > 1 and not self.dry_run:
             self.stash.update_scene(input_data)
-
-            current_plays = set(str(v) for v in (current.get("play_history") or []))
-            old_plays = [
-                str(v) for v in (old.get("play_history") or [])
-                if str(v) and str(v) not in current_plays
-            ]
-            current_os = set(str(v) for v in (current.get("o_history") or []))
-            old_os = [
-                str(v) for v in (old.get("o_history") or [])
-                if str(v) and str(v) not in current_os
-            ]
+        if not self.dry_run:
             if old_plays:
                 self.stash.add_scene_plays(str(current["id"]), old_plays)
             if old_os:
                 self.stash.add_scene_os(str(current["id"]), old_os)
 
-        elif not self.dry_run:
-            current_plays = set(str(v) for v in (current.get("play_history") or []))
-            old_plays = [str(v) for v in (old.get("play_history") or []) if str(v) not in current_plays]
-            current_os = set(str(v) for v in (current.get("o_history") or []))
-            old_os = [str(v) for v in (old.get("o_history") or []) if str(v) not in current_os]
-            if old_plays:
-                self.stash.add_scene_plays(str(current["id"]), old_plays)
-                changed = True
-            if old_os:
-                self.stash.add_scene_os(str(current["id"]), old_os)
-                changed = True
-
+        if self._restore_scene_markers(old, current):
+            changed = True
         return changed
 
     def restore_image(self, old: Dict[str, Any], current: Dict[str, Any]) -> bool:
@@ -797,6 +1530,25 @@ class MigrationEngine:
         ]:
             input_data["performer_ids"] = performer_ids
 
+        gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        for ref in old.get("galleries") or []:
+            if isinstance(ref, dict):
+                gallery_id = self.resolve_gallery_ref(ref)
+                if gallery_id:
+                    gallery_ids.append(gallery_id)
+        gallery_ids = _unique_ids(gallery_ids)
+        current_gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        if gallery_ids != current_gallery_ids:
+            input_data["gallery_ids"] = gallery_ids
+
         old_studio = str(old.get("studio") or "").strip()
         if old_studio and not current.get("studio"):
             studio_id = self.resolve_studio(old_studio)
@@ -807,18 +1559,127 @@ class MigrationEngine:
         if custom_delta:
             input_data["custom_fields"] = {"partial": custom_delta}
 
-        changed = len(input_data) > 1
-        if changed and not self.dry_run:
+        current_o = _clean_int(current.get("o_counter")) or 0
+        old_o = _clean_int(old.get("o_counter")) or 0
+        o_delta = max(0, old_o - current_o)
+        changed = len(input_data) > 1 or o_delta > 0
+        if len(input_data) > 1 and not self.dry_run:
             self.stash.update_image(input_data)
+        if o_delta:
+            self.stats["image_o_increments"] += o_delta
+            if not self.dry_run:
+                self.stash.increment_image_o(str(current["id"]), o_delta)
         return changed
+
+    def _preflight_media_and_infer_galleries(self) -> Dict[str, int]:
+        summary = {
+            "matched": 0,
+            "unmatched": 0,
+            "ambiguous": 0,
+            "collisions": 0,
+        }
+        gallery_evidence: Dict[str, List[set]] = {}
+        used_scene_targets = set()
+        used_image_targets = set()
+
+        def inspect(
+            old_items: Sequence[Dict[str, Any]],
+            current_by_id: Mapping[str, Dict[str, Any]],
+            fp_index,
+            path_index,
+            used_targets: set,
+        ) -> None:
+            for old in old_items:
+                match = match_old_media(
+                    old.get("files") or [],
+                    self.old_files,
+                    fp_index,
+                    path_index,
+                )
+                if not match.object_id:
+                    summary["ambiguous" if match.kind == "ambiguous" else "unmatched"] += 1
+                    continue
+                if match.object_id in used_targets:
+                    summary["collisions"] += 1
+                    continue
+                used_targets.add(match.object_id)
+                summary["matched"] += 1
+                current = current_by_id.get(str(match.object_id)) or {}
+                current_gallery_ids = {
+                    str(gallery.get("id") or "")
+                    for gallery in (current.get("galleries") or [])
+                    if str(gallery.get("id") or "")
+                }
+                if not current_gallery_ids:
+                    continue
+                for ref in old.get("galleries") or []:
+                    if not isinstance(ref, dict):
+                        continue
+                    relation_key = self._gallery_relation_key(ref)
+                    if relation_key:
+                        gallery_evidence.setdefault(relation_key, []).append(set(current_gallery_ids))
+
+        inspect(
+            self.old_scenes,
+            self.scenes_by_id,
+            self.scene_fp_index,
+            self.scene_path_index,
+            used_scene_targets,
+        )
+        inspect(
+            self.old_images,
+            self.images_by_id,
+            self.image_fp_index,
+            self.image_path_index,
+            used_image_targets,
+        )
+
+        for relation_key, evidence_sets in gallery_evidence.items():
+            if not evidence_sets:
+                continue
+            intersection = set.intersection(*evidence_sets)
+            if len(intersection) == 1:
+                self.inferred_gallery_map[relation_key] = next(iter(intersection))
+
+        total = len(self.old_scenes) + len(self.old_images)
+        if total:
+            rate = summary["matched"] / total
+            log(
+                "INFO",
+                f"Preflight media identity: {summary['matched']}/{total} uniquely matched "
+                f"({rate * 100:.1f}%); {summary['unmatched']} unmatched, "
+                f"{summary['ambiguous']} ambiguous, {summary['collisions']} source-target collision(s).",
+            )
+            if self.inferred_gallery_map:
+                log(
+                    "INFO",
+                    f"Inferred {len(self.inferred_gallery_map)} changed-path Gallery mapping(s) "
+                    "from consistent matched-media relationships.",
+                )
+            if not self.dry_run and total >= 100 and rate < 0.70:
+                raise RuntimeError(
+                    "Restore aborted before making changes: fewer than 70% of old media records "
+                    "match uniquely to this Stash. This usually means the wrong export/library "
+                    "was selected or the new Stash has not finished scanning."
+                )
+        return summary
 
     def run(self) -> Dict[str, int]:
         mode = "ANALYZE" if self.dry_run else "RESTORE"
         log(
             "INFO",
             f"{mode}: old export has {len(self.old_scenes)} scene JSON file(s), "
-            f"{len(self.old_images)} image JSON file(s), and {len(self.old_files)} file record(s).",
+            f"{len(self.old_images)} image JSON file(s), {len(self.old_galleries)} gallery JSON file(s), "
+            f"{len(self.old_groups)} group JSON file(s), and {len(self.old_files)} file record(s).",
         )
+
+        self._preflight_media_and_infer_galleries()
+        if not self.dry_run:
+            log("INFO", "Creating automatic Stash database backup before migration changes...")
+            self.stash.backup_database()
+            log("INFO", "Database backup completed successfully.")
+
+        self.prepare_metadata_entities()
 
         total = len(self.old_scenes) + len(self.old_images)
         done = 0
@@ -889,11 +1750,23 @@ class MigrationEngine:
             f"{self.stats['ambiguous_scenes'] + self.stats['ambiguous_images']} ambiguous, "
             f"{self.stats['errors']} error(s).",
         )
+        log(
+            "INFO",
+            f"Entity/relationship summary: safe duplicate merges "
+            f"Tags={self.stats['merged_duplicate_tags']}, "
+            f"Performers={self.stats['merged_duplicate_performers']}, "
+            f"Studios={self.stats['merged_duplicate_studios']}; "
+            f"Galleries reused/created={self.stats['reused_galleries']}/{self.stats['created_galleries']}; "
+            f"Groups reused/created={self.stats['reused_groups']}/{self.stats['created_groups']}; "
+            f"Gallery chapters={self.stats['gallery_chapters_created']}; "
+            f"Scene markers created/updated={self.stats['scene_markers_created']}/{self.stats['scene_markers_updated']}.",
+        )
         if self.dry_run:
             log(
                 "INFO",
                 "No changes were made. Restore will update only already-existing matched "
-                "Scenes/Images; it never creates media records.",
+                "Scenes/Images; metadata-only Groups/user Galleries may be created, while "
+                "file-backed Galleries must resolve safely. Scene/Image/File records are never created.",
             )
         return self.stats
 

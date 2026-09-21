@@ -44,12 +44,15 @@ class FakeStash:
             "parent_studio": None, "stash_ids": [], "tags": [],
             "custom_fields": {},
         }]
+        self._galleries = []
+        self._groups = []
         self._scenes = [{
             "id": "scene1", "title": None, "code": None, "details": None,
             "director": None, "urls": [], "date": None, "rating100": None,
             "organized": False, "resume_time": 0.0, "play_duration": 0.0,
             "play_history": [], "o_history": [], "studio": None,
             "tags": [], "performers": [], "stash_ids": [],
+            "galleries": [], "groups": [], "scene_markers": [],
             "custom_fields": {},
             "files": [{
                 "id": "f1", "path": "/new/movie.mp4", "size": 123,
@@ -66,11 +69,23 @@ class FakeStash:
     def studios(self):
         return [dict(x) for x in self._studios]
 
+    def galleries(self):
+        return [dict(x) for x in self._galleries]
+
+    def groups(self):
+        return [dict(x) for x in self._groups]
+
     def scenes(self):
         return [dict(x) for x in self._scenes]
 
     def images(self):
         return []
+
+    def backup_database(self):
+        self.calls.append(("backup_database", {}))
+        if getattr(self, "fail_backup", False):
+            raise RuntimeError("backup failed")
+        return None
 
     def update_tag(self, data):
         self.calls.append(("update_tag", data))
@@ -117,6 +132,105 @@ class FakeStash:
                 "stash_ids": [], "tags": [], "custom_fields": {}, **data}
         self._studios.append(item)
         return dict(item)
+
+    def update_tag_aliases(self, tag_id, aliases):
+        self.calls.append(("update_tag_aliases", {"id": tag_id, "aliases": aliases}))
+        existing = next(x for x in self._tags if x["id"] == tag_id)
+        existing["aliases"] = list(aliases)
+        return dict(existing)
+
+    def merge_tags(self, source_ids, destination_id):
+        self.calls.append(("merge_tags", {"source": source_ids, "destination": destination_id}))
+        destination = next(x for x in self._tags if x["id"] == destination_id)
+        sources = [x for x in self._tags if x["id"] in source_ids]
+        destination["aliases"] = list(dict.fromkeys(
+            destination.get("aliases", []) + [x["name"] for x in sources]
+        ))
+        self._tags[:] = [x for x in self._tags if x["id"] not in source_ids]
+        return {"id": destination_id, "name": destination["name"], "aliases": destination["aliases"]}
+
+    def merge_performers(self, source_ids, destination_id, values):
+        self.calls.append(("merge_performers", {"source": source_ids, "destination": destination_id, "values": values}))
+        destination = next(x for x in self._performers if x["id"] == destination_id)
+        destination.update(values)
+        destination["id"] = destination_id
+        self._performers[:] = [x for x in self._performers if x["id"] not in source_ids]
+        return dict(destination)
+
+    def merge_studios(self, source_ids, destination_id, values):
+        self.calls.append(("merge_studios", {"source": source_ids, "destination": destination_id, "values": values}))
+        destination = next(x for x in self._studios if x["id"] == destination_id)
+        destination.update(values)
+        destination["id"] = destination_id
+        self._studios[:] = [x for x in self._studios if x["id"] not in source_ids]
+        return dict(destination)
+
+    def create_gallery(self, data):
+        self.calls.append(("create_gallery", data))
+        item = {
+            "id": "g1", "title": data.get("title"), "code": data.get("code"),
+            "urls": data.get("urls", []), "date": data.get("date"),
+            "details": data.get("details"), "photographer": data.get("photographer"),
+            "rating100": data.get("rating100"), "organized": data.get("organized", False),
+            "files": [], "folder": None, "chapters": [], "studio": None,
+            "tags": [], "performers": [], "scenes": [], "custom_fields": {},
+        }
+        self._galleries.append(item)
+        return dict(item)
+
+    def update_gallery(self, data):
+        self.calls.append(("update_gallery", data))
+        existing = next(x for x in self._galleries if x["id"] == data["id"])
+        existing.update({k: v for k, v in data.items() if k not in {"id", "custom_fields", "tag_ids", "performer_ids", "studio_id"}})
+        return dict(existing)
+
+    def create_gallery_chapter(self, gallery_id, title, image_index):
+        self.calls.append(("create_gallery_chapter", {"gallery_id": gallery_id, "title": title, "image_index": image_index}))
+        gallery = next(x for x in self._galleries if x["id"] == gallery_id)
+        chapter = {"id": "chapter1", "title": title, "image_index": image_index}
+        gallery["chapters"].append(chapter)
+        return dict(chapter)
+
+    def create_group(self, data):
+        self.calls.append(("create_group", data))
+        item = {
+            "id": "grp1", "name": data.get("name"), "aliases": data.get("aliases"),
+            "duration": data.get("duration"), "date": data.get("date"),
+            "rating100": data.get("rating100"), "director": data.get("director"),
+            "synopsis": data.get("synopsis"), "urls": data.get("urls", []),
+            "studio": None, "tags": [], "sub_groups": [], "containing_groups": [],
+            "front_image_path": None, "back_image_path": None, "scene_count": 0,
+            "custom_fields": {},
+        }
+        self._groups.append(item)
+        return dict(item)
+
+    def update_group(self, data):
+        self.calls.append(("update_group", data))
+        existing = next(x for x in self._groups if x["id"] == data["id"])
+        existing.update({k: v for k, v in data.items() if k not in {"id", "custom_fields", "tag_ids", "studio_id"}})
+        if "sub_groups" in data:
+            existing["sub_groups"] = [
+                {"group": {"id": item["group_id"], "name": item["group_id"]}, "description": item.get("description")}
+                for item in data["sub_groups"]
+            ]
+        return dict(existing)
+
+    def create_scene_marker(self, data):
+        self.calls.append(("create_scene_marker", data))
+        return {
+            "id": "marker1", "title": data["title"], "seconds": data["seconds"],
+            "end_seconds": data.get("end_seconds"),
+            "primary_tag": {"id": data["primary_tag_id"], "name": "tag"},
+            "tags": [{"id": value, "name": value} for value in data.get("tag_ids", [])],
+        }
+
+    def update_scene_marker(self, data):
+        self.calls.append(("update_scene_marker", data))
+        return {"id": data["id"], **data}
+
+    def increment_image_o(self, image_id, count):
+        self.calls.append(("increment_image_o", {"id": image_id, "count": count}))
 
     def update_scene(self, data):
         self.calls.append(("update_scene", data))
@@ -199,6 +313,203 @@ class MigrationEngineTests(unittest.TestCase):
             stats = engine.run()
             self.assertEqual(stats["matched_scenes"], 1)
             self.assertEqual(stash.calls, [])
+
+    def test_restore_creates_metadata_only_gallery_group_chapter_and_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "galleries", "gallery.json", {
+                "title": "Old Gallery",
+                "tags": ["Big Breasts"],
+                "performers": ["Jane Doe"],
+                "chapters": [{"title": "Chapter One", "image_index": 0}],
+            })
+            write_json(tmp, "groups", "group.json", {
+                "name": "Series One",
+                "tags": ["Big Breasts"],
+                "studio": "Artist Studio",
+            })
+            scene_path = pathlib.Path(tmp) / "scenes" / "scene.json"
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            scene["galleries"] = [{"title": "Old Gallery"}]
+            scene["movies"] = [{"movieName": "Series One", "scene_index": 2}]
+            scene["markers"] = [{
+                "title": "Marker One", "seconds": "12.5",
+                "primary_tag": "Big Breasts", "tags": ["Big Breasts"],
+            }]
+            scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+            stash = FakeStash()
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            stats = engine.run()
+
+            self.assertEqual(stats["created_galleries"], 1)
+            self.assertEqual(stats["created_groups"], 1)
+            self.assertEqual(stats["gallery_chapters_created"], 1)
+            self.assertEqual(stats["scene_markers_created"], 1)
+            update = next(data for name, data in stash.calls if name == "update_scene")
+            self.assertEqual(update["gallery_ids"], ["g1"])
+            self.assertEqual(update["groups"], [{"group_id": "grp1", "scene_index": 2}])
+            self.assertTrue(any(name == "create_scene_marker" for name, _ in stash.calls))
+
+    def test_restore_backs_up_before_first_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            MigrationEngine(stash, pathlib.Path(tmp), dry_run=False).run()
+            first_write = next(
+                index for index, (name, _) in enumerate(stash.calls)
+                if name in {
+                    "update_tag", "create_tag", "update_performer", "create_performer",
+                    "update_studio", "create_studio", "update_scene", "create_gallery",
+                    "create_group", "merge_tags", "merge_performers", "merge_studios",
+                }
+            )
+            backup_index = next(index for index, (name, _) in enumerate(stash.calls) if name == "backup_database")
+            self.assertLess(backup_index, first_write)
+
+    def test_low_media_match_rate_aborts_before_backup_or_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(100):
+                write_json(tmp, "scenes", f"scene{index}.json", {
+                    "title": f"Missing {index}",
+                    "files": [f"/missing/{index}.mp4"],
+                })
+            pathlib.Path(tmp, "files").mkdir(parents=True, exist_ok=True)
+            stash = FakeStash()
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            with self.assertRaises(RuntimeError):
+                engine.run()
+            self.assertEqual(stash.calls, [])
+
+    def test_safe_duplicate_tags_are_collapsed_during_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            duplicate = dict(stash._tags[0])
+            duplicate.update({"id": "t2", "name": "Big Breasts", "aliases": [], "image_count": 0})
+            stash._tags[0].update({
+                "image_count": 5, "scene_count": 0, "scene_marker_count": 0,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0, "parents": [], "children": [], "image_path": None,
+            })
+            duplicate.update({
+                "scene_count": 0, "scene_marker_count": 0, "gallery_count": 0,
+                "performer_count": 0, "studio_count": 0, "group_count": 0,
+                "parents": [], "children": [], "image_path": None,
+            })
+            stash._tags.append(duplicate)
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_tag("Big Breasts")
+            self.assertEqual(resolved, "t1")
+            self.assertEqual(engine.stats["merged_duplicate_tags"], 1)
+            self.assertTrue(any(name == "merge_tags" for name, _ in stash.calls))
+
+    def test_backup_failure_aborts_before_metadata_mutations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            stash.fail_backup = True
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            with self.assertRaises(RuntimeError):
+                engine.run()
+            self.assertEqual(stash.calls, [("backup_database", {})])
+
+    def test_gallery_mapping_can_be_inferred_from_uniquely_matched_scene_relationship(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "galleries", "gallery.json", {
+                "folder_path": r"D:\Old\Gallery",
+                "title": "Moved Gallery",
+            })
+            scene_path = pathlib.Path(tmp) / "scenes" / "scene.json"
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            scene["galleries"] = [{"folder_path": r"D:\Old\Gallery"}]
+            scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+            stash = FakeStash()
+            stash._galleries = [{
+                "id": "g-existing", "title": "Moved Gallery", "code": None,
+                "urls": [], "date": None, "details": None, "photographer": None,
+                "rating100": None, "organized": False, "files": [],
+                "folder": {"id": "folder-new", "path": "/new/Gallery"},
+                "chapters": [], "studio": None, "tags": [], "performers": [],
+                "scenes": [{"id": "scene1"}], "custom_fields": {},
+            }]
+            stash._scenes[0]["galleries"] = [{"id": "g-existing", "title": "Moved Gallery"}]
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=True)
+            engine.run()
+            key = engine._gallery_relation_key({"folder_path": r"D:\Old\Gallery"})
+            self.assertEqual(engine.inferred_gallery_map[key], "g-existing")
+            self.assertEqual(engine.stats["unresolved_galleries"], 0)
+
+    def test_tag_hierarchy_and_missing_entity_artwork_are_restored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            parent_path = pathlib.Path(tmp) / "tags" / "parent.json"
+            parent_path.write_text(json.dumps({"name": "Body"}), encoding="utf-8")
+            tag_path = pathlib.Path(tmp) / "tags" / "tag.json"
+            tag = json.loads(tag_path.read_text(encoding="utf-8"))
+            tag["parents"] = ["Body"]
+            tag["image"] = "data:image/png;base64,AAAA"
+            tag_path.write_text(json.dumps(tag), encoding="utf-8")
+
+            stash = FakeStash()
+            stash._tags[0].update({
+                "parents": [], "children": [], "image_path": "/tag/t1/image?default=true",
+                "scene_count": 0, "scene_marker_count": 0, "image_count": 1,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0,
+            })
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            engine.run()
+
+            updates = [data for name, data in stash.calls if name == "update_tag"]
+            self.assertTrue(any(data.get("image") == "data:image/png;base64,AAAA" for data in updates))
+            self.assertTrue(any("parent_ids" in data for data in updates))
+            self.assertEqual(engine.stats["tag_parent_links_added"], 1)
+
+    def test_safe_duplicate_performers_are_collapsed_during_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            base = stash._performers[0]
+            base.update({
+                "scene_count": 4, "image_count": 0, "gallery_count": 0, "group_count": 0,
+                "image_path": "/performer/p1/image?default=true",
+            })
+            duplicate = dict(base)
+            duplicate.update({
+                "id": "p2", "name": "Jane Doe", "alias_list": [],
+                "scene_count": 0,
+            })
+            stash._performers.append(duplicate)
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_performer("Jane Doe")
+            self.assertEqual(resolved, "p1")
+            self.assertEqual(engine.stats["merged_duplicate_performers"], 1)
+            self.assertTrue(any(name == "merge_performers" for name, _ in stash.calls))
+
+    def test_safe_duplicate_studios_are_collapsed_during_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            base = stash._studios[0]
+            base.update({
+                "scene_count": 4, "image_count": 0, "gallery_count": 0, "group_count": 0,
+                "image_path": "/studio/s1/image?default=true", "child_studios": [],
+            })
+            duplicate = dict(base)
+            duplicate.update({
+                "id": "s2", "name": "Artist Studio", "aliases": [],
+                "scene_count": 0,
+            })
+            stash._studios.append(duplicate)
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_studio("Artist Studio")
+            self.assertEqual(resolved, "s1")
+            self.assertEqual(engine.stats["merged_duplicate_studios"], 1)
+            self.assertTrue(any(name == "merge_studios" for name, _ in stash.calls))
 
     def test_duplicate_old_performer_display_name_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:

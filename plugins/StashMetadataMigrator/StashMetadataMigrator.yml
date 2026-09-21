@@ -1,6 +1,6 @@
 name: Stash Metadata Migrator
-description: Restore metadata from an old Stash JSON export onto media already scanned into a new Stash without creating duplicate Scene, Image, or File records.
-version: 1.0.0
+description: Safely restore complete metadata from an old Stash JSON export onto an existing scanned library, including conservative entity deduplication, Galleries, Groups, chapters, markers, hierarchy, history, and automatic pre-restore backup.
+version: 1.1.0
 exec:
   - python
   - "{pluginDir}/StashMetadataMigrator.py"
@@ -16,11 +16,11 @@ settings:
 
 tasks:
   - name: 1. Analyze Old Stash Export (No Changes)
-    description: Safely matches old Scenes and Images to media already present in this Stash using MD5/OShash fingerprints first and exact paths only as a fallback. Reports unmatched and ambiguous records and shows which metadata entities would be reused or created. Makes no changes.
+    description: Read-only full migration preflight. Matches Scenes/Images by strong fingerprints, identifies safe duplicate Tags/Performers/Studios, resolves Galleries/Groups, and reports ambiguous/unmatched records. Makes no changes.
     defaultArgs:
       action: analyze
 
   - name: 2. Restore Metadata to Existing Media
-    description: Restores metadata only onto uniquely matched existing Scenes and Images. It never creates Scene, Image, or File records. Existing metadata wins conflicts; old tags/performers/studios are merged into existing entities or created only when no safe match exists.
+    description: Creates an automatic database backup, safely merges formatting-equivalent duplicate Tags/Performers/Studios, restores metadata and relations to existing Scenes/Images, and restores metadata-only Galleries/Groups, chapters, markers, hierarchy, artwork, custom fields, and history. It never creates Scene, Image, or File records.
     defaultArgs:
       action: restore
