@@ -1,4 +1,4 @@
-# Stash Metadata Migrator v1.1.3
+# Stash Metadata Migrator v1.1.4
 
 **Stash Metadata Migrator restores an old Stash JSON export into a new Stash that has already scanned the real media files—without recreating Scene, Image, or File records.**
 
@@ -113,6 +113,12 @@ Before a destructive merge it checks for:
 - differing Stash IDs from the same endpoint
 
 If those checks fail, the duplicates remain untouched.
+
+### Exported artwork normalization
+
+Stash JSON exports may contain Tag/Performer/Studio/Group artwork as raw base64 rather than a URL or `data:` URI. v1.1.4 detects JPEG, PNG, GIF, WebP, and SVG payloads and converts raw base64 to a GraphQL-safe `data:image/...;base64,...` value before restore.
+
+Unsupported or malformed artwork is skipped with a warning instead of aborting the migration. Existing custom artwork still wins and is never overwritten by old export artwork.
 
 ### Tag alias collision protection
 
