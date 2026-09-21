@@ -1346,11 +1346,61 @@ class MigrationEngine:
         ]:
             input_data["performer_ids"] = performer_ids
 
+        gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        for ref in old.get("galleries") or []:
+            if isinstance(ref, dict):
+                gallery_id = self.resolve_gallery_ref(ref)
+                if gallery_id:
+                    gallery_ids.append(gallery_id)
+        gallery_ids = _unique_ids(gallery_ids)
+        current_gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        if gallery_ids != current_gallery_ids:
+            input_data["gallery_ids"] = gallery_ids
+
         old_studio = str(old.get("studio") or "").strip()
         if old_studio and not current.get("studio"):
             studio_id = self.resolve_studio(old_studio)
             if studio_id:
                 input_data["studio_id"] = studio_id
+
+        scene_groups: Dict[str, Optional[int]] = {}
+        for relation in current.get("groups") or []:
+            group = relation.get("group") or {}
+            group_id = str(group.get("id") or "")
+            if group_id:
+                scene_groups[group_id] = _clean_int(relation.get("scene_index"))
+        for relation in old.get("movies") or []:
+            if not isinstance(relation, dict):
+                continue
+            group_name = str(relation.get("movieName") or relation.get("groupName") or "").strip()
+            if not group_name:
+                continue
+            group_id = self.resolve_group(group_name)
+            if not group_id:
+                continue
+            old_index = _clean_int(relation.get("scene_index"))
+            if group_id not in scene_groups:
+                scene_groups[group_id] = old_index
+            elif scene_groups[group_id] is None and old_index is not None:
+                scene_groups[group_id] = old_index
+        current_group_map = {
+            str((relation.get("group") or {}).get("id") or ""): _clean_int(relation.get("scene_index"))
+            for relation in (current.get("groups") or [])
+            if str((relation.get("group") or {}).get("id") or "")
+        }
+        if scene_groups != current_group_map:
+            input_data["groups"] = [
+                {"group_id": group_id, "scene_index": scene_index}
+                for group_id, scene_index in scene_groups.items()
+            ]
 
         stash_ids, conflicts = _safe_stash_ids(
             current.get("stash_ids") or [], old.get("stash_ids") or []
@@ -1371,37 +1421,28 @@ class MigrationEngine:
         if custom_delta:
             input_data["custom_fields"] = {"partial": custom_delta}
 
-        changed = len(input_data) > 1
-        if changed and not self.dry_run:
+        current_plays = set(str(v) for v in (current.get("play_history") or []))
+        old_plays = [
+            str(v) for v in (old.get("play_history") or [])
+            if str(v) and str(v) not in current_plays
+        ]
+        current_os = set(str(v) for v in (current.get("o_history") or []))
+        old_os = [
+            str(v) for v in (old.get("o_history") or [])
+            if str(v) and str(v) not in current_os
+        ]
+
+        changed = len(input_data) > 1 or bool(old_plays) or bool(old_os)
+        if len(input_data) > 1 and not self.dry_run:
             self.stash.update_scene(input_data)
-
-            current_plays = set(str(v) for v in (current.get("play_history") or []))
-            old_plays = [
-                str(v) for v in (old.get("play_history") or [])
-                if str(v) and str(v) not in current_plays
-            ]
-            current_os = set(str(v) for v in (current.get("o_history") or []))
-            old_os = [
-                str(v) for v in (old.get("o_history") or [])
-                if str(v) and str(v) not in current_os
-            ]
+        if not self.dry_run:
             if old_plays:
                 self.stash.add_scene_plays(str(current["id"]), old_plays)
             if old_os:
                 self.stash.add_scene_os(str(current["id"]), old_os)
 
-        elif not self.dry_run:
-            current_plays = set(str(v) for v in (current.get("play_history") or []))
-            old_plays = [str(v) for v in (old.get("play_history") or []) if str(v) not in current_plays]
-            current_os = set(str(v) for v in (current.get("o_history") or []))
-            old_os = [str(v) for v in (old.get("o_history") or []) if str(v) not in current_os]
-            if old_plays:
-                self.stash.add_scene_plays(str(current["id"]), old_plays)
-                changed = True
-            if old_os:
-                self.stash.add_scene_os(str(current["id"]), old_os)
-                changed = True
-
+        if self._restore_scene_markers(old, current):
+            changed = True
         return changed
 
     def restore_image(self, old: Dict[str, Any], current: Dict[str, Any]) -> bool:
