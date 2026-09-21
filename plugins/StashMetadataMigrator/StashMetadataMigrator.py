@@ -211,6 +211,7 @@ class MigrationEngine:
         self.resolved_studios: Dict[str, Optional[str]] = {}
         self.resolved_galleries: Dict[str, Optional[str]] = {}
         self.resolved_groups: Dict[str, Optional[str]] = {}
+        self.inferred_gallery_map: Dict[str, str] = {}
         self._studio_resolution_stack = set()
         self._group_resolution_stack = set()
 
@@ -841,17 +842,28 @@ class MigrationEngine:
                 values.extend(part.strip() for part in raw.split(separator))
         return merge_strings(values)
 
-    def _gallery_cache_key(self, source: Mapping[str, Any]) -> str:
-        source_file = str(source.get("_migration_source_file") or "").strip()
-        if source_file:
-            return source_file
-        folder = str(source.get("folder_path") or "").strip()
+    @staticmethod
+    def _gallery_relation_key(ref: Mapping[str, Any]) -> str:
+        folder = str(ref.get("folder_path") or "").strip()
         if folder:
             return "folder:" + normalized_path(folder)
-        zip_files = source.get("zip_files") or []
+        zip_files = sorted(
+            normalized_path(str(v))
+            for v in (ref.get("zip_files") or [])
+            if str(v).strip()
+        )
         if zip_files:
-            return "zip:" + "|".join(normalized_path(str(v)) for v in zip_files)
-        return "title:" + normalize_name(str(source.get("title") or ""))
+            return "zip:" + "|".join(zip_files)
+        title = str(ref.get("title") or "").strip()
+        if title:
+            return "title:" + normalize_name(title)
+        return ""
+
+    def _gallery_cache_key(self, source: Mapping[str, Any]) -> str:
+        relation_key = self._gallery_relation_key(source)
+        if relation_key:
+            return relation_key
+        return str(source.get("_migration_source_file") or "")
 
     def _old_gallery_for_ref(self, ref: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         folder = str(ref.get("folder_path") or "").strip()
@@ -872,6 +884,9 @@ class MigrationEngine:
         return None
 
     def _match_current_gallery(self, source: Mapping[str, Any]) -> Tuple[Optional[str], str]:
+        inferred = self.inferred_gallery_map.get(self._gallery_relation_key(source))
+        if inferred:
+            return inferred, "media-consensus"
         zip_files = [str(v) for v in (source.get("zip_files") or []) if str(v).strip()]
         if zip_files:
             match = match_old_media(
