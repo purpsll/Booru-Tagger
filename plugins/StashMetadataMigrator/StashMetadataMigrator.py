@@ -1295,7 +1295,7 @@ class MigrationEngine:
                 continue
             primary_name = str(marker.get("primary_tag") or "").strip()
             primary_id = self.resolve_tag(primary_name) if primary_name else None
-            if not primary_id or primary_id.startswith("DRYRUN:"):
+            if not primary_id:
                 continue
 
             tag_ids: List[str] = []
