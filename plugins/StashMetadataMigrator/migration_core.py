@@ -15,7 +15,25 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 
-STRONG_FINGERPRINT_TYPES = ("md5", "oshash")
+STRONG_FINGERPRINT_TYPES = ("md5", "oshash", "sha1", "sha256", "sha512")
+EXCLUDED_IDENTITY_FINGERPRINT_TYPES = {"phash"}
+
+
+def normalize_fingerprint_type(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+    aliases = {
+        "md5": "md5",
+        "oshash": "oshash",
+        "opensubtitles": "oshash",
+        "opensubtitleshash": "oshash",
+        "sha1": "sha1",
+        "sha256": "sha256",
+        "sha512": "sha512",
+        "phash": "phash",
+        "perceptualhash": "phash",
+    }
+    return aliases.get(compact, compact)
 
 
 def normalize_name(value: str) -> str:
@@ -202,7 +220,7 @@ def build_old_file_index(root: Path) -> Dict[str, Dict[str, Any]]:
             continue
         fps: Dict[str, str] = {}
         for fp in item.get("fingerprints") or []:
-            fp_type = str(fp.get("type") or "").casefold().strip()
+            fp_type = normalize_fingerprint_type(str(fp.get("type") or ""))
             value = str(fp.get("fingerprint") or "").casefold().strip()
             if fp_type and value:
                 fps[fp_type] = value
@@ -228,7 +246,7 @@ def build_current_media_indexes(
             if path:
                 path_index.setdefault(normalized_path(path), []).append(obj_id)
             for fp in file.get("fingerprints") or []:
-                fp_type = str(fp.get("type") or "").casefold().strip()
+                fp_type = normalize_fingerprint_type(str(fp.get("type") or ""))
                 value = str(fp.get("value") or "").casefold().strip()
                 if fp_type in STRONG_FINGERPRINT_TYPES and value:
                     fp_index.setdefault((fp_type, value), []).append(obj_id)
@@ -296,10 +314,20 @@ def match_old_media(
             value = str(fingerprints.get(fp_type) or "").strip()
             if value:
                 fp_bits.append(f"{fp_type}:{value[:12]}")
+        excluded = sorted(
+            fp_type for fp_type, value in fingerprints.items()
+            if value and normalize_fingerprint_type(fp_type) in EXCLUDED_IDENTITY_FINGERPRINT_TYPES
+        )
         if fp_bits:
-            inspected.append(f"{path_text} [{', '.join(fp_bits)}]")
+            suffix = f"; excluded identity types: {', '.join(excluded)}" if excluded else ""
+            inspected.append(f"{path_text} [{', '.join(fp_bits)}{suffix}]")
+        elif excluded:
+            inspected.append(
+                f"{path_text} [no strong exact content hash; excluded identity types: "
+                f"{', '.join(excluded)}]"
+            )
         else:
-            inspected.append(f"{path_text} [no md5/oshash]")
+            inspected.append(f"{path_text} [no strong exact content hash]")
     detail = "no exact fingerprint or exact-path match"
     if inspected:
         preview = "; ".join(inspected[:3])
