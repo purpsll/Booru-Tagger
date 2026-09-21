@@ -563,6 +563,62 @@ class MigrationEngineTests(unittest.TestCase):
             self.assertIn("safe alias", [value.casefold() for value in update["aliases"]])
             self.assertGreaterEqual(engine.stats["tag_alias_collision_skips"], 1)
 
+    def test_raw_jpeg_tag_artwork_is_wrapped_as_data_uri(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            tag_path = pathlib.Path(tmp) / "tags" / "tag.json"
+            tag = json.loads(tag_path.read_text(encoding="utf-8"))
+            tag["image"] = "/9j/2Q=="
+            tag_path.write_text(json.dumps(tag), encoding="utf-8")
+
+            stash = FakeStash()
+            stash._tags[0].update({
+                "parents": [], "children": [],
+                "image_path": "/tag/t1/image?default=true",
+                "scene_count": 0, "scene_marker_count": 0, "image_count": 1,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0,
+            })
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            engine.resolve_tag("Big Breasts")
+
+            update = next(
+                data for name, data in stash.calls
+                if name == "update_tag" and data.get("id") == "t1"
+            )
+            self.assertEqual(update["image"], "data:image/jpeg;base64,/9j/2Q==")
+            self.assertEqual(engine.stats["entity_images_restored"], 1)
+
+    def test_invalid_tag_artwork_is_skipped_without_aborting_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            tag_path = pathlib.Path(tmp) / "tags" / "tag.json"
+            tag = json.loads(tag_path.read_text(encoding="utf-8"))
+            tag["image"] = "this-is-not-an-image"
+            tag["description"] = "restore me"
+            tag_path.write_text(json.dumps(tag), encoding="utf-8")
+
+            stash = FakeStash()
+            stash._tags[0].update({
+                "parents": [], "children": [],
+                "image_path": "/tag/t1/image?default=true",
+                "scene_count": 0, "scene_marker_count": 0, "image_count": 1,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0,
+            })
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            engine.resolve_tag("Big Breasts")
+
+            update = next(
+                data for name, data in stash.calls
+                if name == "update_tag" and data.get("id") == "t1"
+            )
+            self.assertNotIn("image", update)
+            self.assertEqual(update["description"], "restore me")
+            self.assertEqual(engine.stats["entity_images_skipped_invalid"], 1)
+
     def test_safe_duplicate_tags_are_collapsed_during_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._build_export(tmp)
