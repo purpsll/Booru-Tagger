@@ -73,7 +73,45 @@ class MediaDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(match.kind, "unmatched")
         self.assertIn(path, match.detail)
-        self.assertIn("no md5/oshash", match.detail)
+        self.assertIn("no strong exact content hash", match.detail)
+
+    def test_sha256_matches_when_paths_changed(self):
+        path = r"D:\\Old\\movie.mp4"
+        current_path = "/new/movie.mp4"
+        from migration_core import build_current_media_indexes
+        fp_index, path_index = build_current_media_indexes([{
+            "id": "scene-sha",
+            "files": [{
+                "path": current_path,
+                "fingerprints": [{"type": "SHA-256", "value": "ABCDEF123456"}],
+            }],
+        }])
+        match = match_old_media(
+            [path],
+            {path: {
+                "path": path,
+                "fingerprints": {"sha256": "abcdef123456"},
+            }},
+            fp_index,
+            path_index,
+        )
+        self.assertEqual(match.object_id, "scene-sha")
+        self.assertEqual(match.kind, "fingerprint")
+
+    def test_phash_only_is_reported_but_not_used_as_identity(self):
+        path = r"D:\\Old\\image.jpg"
+        match = match_old_media(
+            [path],
+            {path: {
+                "path": path,
+                "fingerprints": {"phash": "ffff"},
+            }},
+            {},
+            {},
+        )
+        self.assertIsNone(match.object_id)
+        self.assertEqual(match.kind, "unmatched")
+        self.assertIn("excluded identity types: phash", match.detail)
 
     def test_unmatched_media_reports_exported_strong_hashes(self):
         path = r"D:\\Old\\missing.mp4"
