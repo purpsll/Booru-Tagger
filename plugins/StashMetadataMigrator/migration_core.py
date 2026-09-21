@@ -245,11 +245,19 @@ def build_current_media_indexes(
             path = str(file.get("path") or "").strip()
             if path:
                 path_index.setdefault(normalized_path(path), []).append(obj_id)
+            file_size = int(file.get("size") or 0)
             for fp in file.get("fingerprints") or []:
                 fp_type = normalize_fingerprint_type(str(fp.get("type") or ""))
                 value = str(fp.get("value") or "").casefold().strip()
                 if fp_type in STRONG_FINGERPRINT_TYPES and value:
                     fp_index.setdefault((fp_type, value), []).append(obj_id)
+                elif fp_type == "phash" and value and file_size > 0:
+                    # Strict pHash fallback is intentionally keyed by exact
+                    # perceptual hash AND exact file size. It is never mixed
+                    # into the strong-hash identity stage.
+                    fp_index.setdefault(
+                        ("phash+size", f"{value}:{file_size}"), []
+                    ).append(obj_id)
     return fp_index, path_index
 
 
@@ -301,6 +309,52 @@ def match_old_media(
         return MediaMatch(next(iter(path_candidates)), "exact-path", "exact current path")
     if len(path_candidates) > 1:
         return MediaMatch(None, "ambiguous", "exact path maps to multiple objects")
+
+    # Final conservative fallback: exact pHash + exact file size, and only when
+    # that combined key resolves uniquely. pHash alone is never identity.
+    phash_candidate_sets: List[set[str]] = []
+    phash_evidence: List[str] = []
+    for old_path in old_paths or []:
+        info = old_files.get(str(old_path))
+        if not info:
+            continue
+        fingerprints = info.get("fingerprints") or {}
+        phash = str(fingerprints.get("phash") or "").casefold().strip()
+        size = int(info.get("size") or 0)
+        if not phash or size <= 0:
+            continue
+        ids = set(
+            str(v)
+            for v in current_fp_index.get(
+                ("phash+size", f"{phash}:{size}"), ()
+            )
+            if str(v)
+        )
+        if ids:
+            phash_candidate_sets.append(ids)
+            phash_evidence.append(f"phash:{phash[:12]} + size:{size}")
+
+    if phash_candidate_sets:
+        intersection = set.intersection(*phash_candidate_sets)
+        if len(intersection) == 1:
+            return MediaMatch(
+                next(iter(intersection)),
+                "strict-phash",
+                ", ".join(phash_evidence),
+            )
+        union = set.union(*phash_candidate_sets)
+        if len(union) == 1:
+            return MediaMatch(
+                next(iter(union)),
+                "strict-phash",
+                ", ".join(phash_evidence),
+            )
+        if len(union) > 1:
+            return MediaMatch(
+                None,
+                "ambiguous",
+                f"strict pHash+size points to {len(union)} objects",
+            )
     inspected: List[str] = []
     for old_path in old_paths or []:
         path_text = str(old_path)
