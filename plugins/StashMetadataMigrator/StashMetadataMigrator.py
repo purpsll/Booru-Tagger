@@ -394,20 +394,26 @@ class MigrationEngine:
             tag for tag in self.tags
             if str(tag.get("name") or "").strip().casefold() == raw.casefold()
         ]
-        if len(exact_hits) == 1:
-            return EntityMatch(exact_hits[0], "primary-exact", 1.0, 0.0), False
-        if len(exact_hits) > 1:
-            return None, True
 
         normalized = normalize_name(raw)
         normalized_hits = [
             tag for tag in self.tags
             if normalize_name(str(tag.get("name") or "")) == normalized
         ]
-        if len(normalized_hits) == 1:
-            return EntityMatch(normalized_hits[0], "primary-normalized", 1.0, 0.0), False
+
+        # Formatting-equivalent primary duplicates (for example Big Breasts /
+        # big_breasts) should still be collapsed safely instead of allowing an
+        # exact-spelling variant to bypass deduplication.
         if len(normalized_hits) > 1:
             return None, True
+
+        if len(exact_hits) == 1:
+            return EntityMatch(exact_hits[0], "primary-exact", 1.0, 0.0), False
+        if len(exact_hits) > 1:
+            return None, True
+
+        if len(normalized_hits) == 1:
+            return EntityMatch(normalized_hits[0], "primary-normalized", 1.0, 0.0), False
         return None, False
 
     def resolve_tag(self, name: str) -> Optional[str]:
