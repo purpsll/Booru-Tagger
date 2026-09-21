@@ -303,6 +303,8 @@ class MigrationEngine:
             "tag_identity_conflict_relationship_reuse": 0,
             "tag_creation_guard_skips": 0,
             "tag_alias_collision_skips": 0,
+            "performer_alias_collision_skips": 0,
+            "studio_alias_collision_skips": 0,
             "fuzzy_performer_reuse": 0,
             "fuzzy_studio_reuse": 0,
             "merged_duplicate_tags": 0,
@@ -861,6 +863,64 @@ class MigrationEngine:
             input_data["custom_fields"] = {"partial": delta}
         return self.stash.update_tag(input_data)
 
+    def _safe_entity_aliases(
+        self,
+        collection: Sequence[Dict[str, Any]],
+        alias_field: str,
+        aliases: Iterable[str],
+        *,
+        destination_id: Optional[str],
+        destination_name: str,
+        entity_label: str,
+        stat_key: str,
+    ) -> List[str]:
+        """Filter aliases that collide with another current entity name or alias."""
+        destination_id = str(destination_id or "")
+        destination_name_key = str(destination_name or "").casefold().strip()
+
+        name_owners: Dict[str, str] = {}
+        alias_owners: Dict[str, str] = {}
+        for entity in collection:
+            entity_id = str(entity.get("id") or "")
+            name_key = str(entity.get("name") or "").casefold().strip()
+            if name_key:
+                name_owners[name_key] = entity_id
+            for alias in entity.get(alias_field) or []:
+                alias_key = str(alias or "").casefold().strip()
+                if alias_key:
+                    alias_owners[alias_key] = entity_id
+
+        out: List[str] = []
+        seen = set()
+        skipped: List[str] = []
+        for alias in aliases or []:
+            text = str(alias or "").strip()
+            key = text.casefold()
+            if not text or key in seen or key == destination_name_key:
+                continue
+
+            name_owner = name_owners.get(key)
+            alias_owner = alias_owners.get(key)
+            if (
+                (name_owner and name_owner != destination_id)
+                or (alias_owner and alias_owner != destination_id)
+            ):
+                skipped.append(text)
+                continue
+
+            seen.add(key)
+            out.append(text)
+
+        if skipped:
+            unique_skipped = sorted(set(skipped), key=str.casefold)
+            self.stats[stat_key] += len({value.casefold() for value in skipped})
+            log(
+                "WARNING",
+                f"Skipped conflicting {entity_label} alias(es) while preserving current "
+                f"{entity_label} identities: " + ", ".join(unique_skipped),
+            )
+        return out
+
     def resolve_performer(self, name: str) -> Optional[str]:
         key = normalize_name(name)
         if not key:
@@ -970,6 +1030,15 @@ class MigrationEngine:
         )
         current_name = str(current.get("name") or source.get("name") or fallback_name)
         aliases = [a for a in aliases if a.casefold() != current_name.casefold()]
+        aliases = self._safe_entity_aliases(
+            self.performers,
+            "alias_list",
+            aliases,
+            destination_id=str(current.get("id") or ""),
+            destination_name=current_name,
+            entity_label="Performer",
+            stat_key="performer_alias_collision_skips",
+        )
 
         urls = merge_strings(
             current.get("urls") or [],
@@ -1159,6 +1228,15 @@ class MigrationEngine:
             [str(source.get("name") or fallback_name)],
         )
         aliases = [a for a in aliases if a.casefold() != current_name.casefold()]
+        aliases = self._safe_entity_aliases(
+            self.studios,
+            "aliases",
+            aliases,
+            destination_id=str(current.get("id") or ""),
+            destination_name=current_name,
+            entity_label="Studio",
+            stat_key="studio_alias_collision_skips",
+        )
         urls = merge_strings(
             current.get("urls") or [], source.get("urls") or [], [source.get("url") or ""]
         )
@@ -2144,6 +2222,8 @@ class MigrationEngine:
             f"(external-ID reuse={self.stats['stash_id_tag_reuse']}, "
             f"creation-guard skips={self.stats['tag_creation_guard_skips']}, "
             f"alias-collision skips={self.stats['tag_alias_collision_skips']}); "
+            f"Performer/Studio alias-collision skips="
+            f"{self.stats['performer_alias_collision_skips']}/{self.stats['studio_alias_collision_skips']}; "
             f"safe duplicate merges Tags={self.stats['merged_duplicate_tags']}, "
             f"Performers={self.stats['merged_duplicate_performers']}, "
             f"Studios={self.stats['merged_duplicate_studios']}; "
