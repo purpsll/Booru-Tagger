@@ -4760,8 +4760,84 @@ def run_tag_cleanup(stash: Stash, args: Dict[str, Any]) -> Dict[str, Any]:
         f"group(s) eligible; {len(plan.review)} review-only candidate(s) "
         "will not be touched.",
     )
+
+    tags_by_id = {
+        str(tag.get("id") or ""): tag
+        for tag in tags
+        if str(tag.get("id") or "")
+    }
+    alias_owners: Dict[str, str] = {}
+    for tag in tags:
+        tag_id = str(tag.get("id") or "")
+        for alias in tag.get("aliases") or []:
+            key = str(alias or "").casefold().strip()
+            if key:
+                alias_owners[key] = tag_id
+
+    stats["alias_collisions_cleared"] = 0
+    stats["external_alias_conflicts_skipped"] = 0
+
     for candidate in plan.safe_merges:
         try:
+            merge_group_ids = {
+                str(candidate.destination_id),
+                *[str(tag_id) for tag_id in candidate.source_ids],
+            }
+
+            # Stash v0.31.1 inserts each source tag name into tag_aliases before
+            # moving source aliases. tag_aliases.alias is globally UNIQUE, so a
+            # perfectly safe duplicate merge fails if that source name already
+            # exists as an alias. If the alias belongs to the same merge group,
+            # remove it temporarily; native tagsMerge recreates the source name
+            # as an alias on the destination. If it belongs to an unrelated tag,
+            # do not mutate that tag or guess — skip this candidate for review.
+            alias_removals: Dict[str, set] = {}
+            external_conflicts: List[Tuple[str, str]] = []
+            for source_id in candidate.source_ids:
+                source = tags_by_id.get(str(source_id)) or {}
+                source_name = str(source.get("name") or "").strip()
+                if not source_name:
+                    continue
+                owner_id = alias_owners.get(source_name.casefold())
+                if not owner_id:
+                    continue
+                if owner_id in merge_group_ids:
+                    alias_removals.setdefault(owner_id, set()).add(
+                        source_name.casefold()
+                    )
+                else:
+                    owner = tags_by_id.get(owner_id) or {}
+                    external_conflicts.append(
+                        (source_name, str(owner.get("name") or owner_id))
+                    )
+
+            if external_conflicts:
+                stats["external_alias_conflicts_skipped"] += 1
+                details = ", ".join(
+                    f"'{alias}' is already an alias of '{owner}'"
+                    for alias, owner in external_conflicts
+                )
+                log(
+                    "WARNING",
+                    f"Skipped automatic merge into '{candidate.destination_name}' "
+                    f"because an unrelated tag owns a source-name alias: {details}. "
+                    "Leaving this group for manual review.",
+                )
+                continue
+
+            for owner_id, remove_keys in alias_removals.items():
+                owner = tags_by_id.get(owner_id) or {}
+                existing_aliases = [
+                    str(alias)
+                    for alias in (owner.get("aliases") or [])
+                    if str(alias or "").casefold().strip() not in remove_keys
+                ]
+                stash.update_tag_aliases(owner_id, existing_aliases)
+                owner["aliases"] = existing_aliases
+                stats["alias_collisions_cleared"] += len(remove_keys)
+                for key in remove_keys:
+                    alias_owners.pop(key, None)
+
             stash.merge_tags(
                 list(candidate.source_ids),
                 candidate.destination_id,
