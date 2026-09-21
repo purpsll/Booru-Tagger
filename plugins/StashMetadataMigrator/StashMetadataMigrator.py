@@ -26,8 +26,15 @@ from migration_core import (
     source_name_map,
 )
 from stash_client import Stash
+from dedup import (
+    merged_entity_values,
+    safe_formatting_merge,
+    tag_alias_preflight,
+)
 
 
+TAG_THRESHOLD = 0.96
+TAG_MARGIN = 0.02
 PERFORMER_THRESHOLD = 0.98
 PERFORMER_MARGIN = 0.03
 STUDIO_THRESHOLD = 0.96
@@ -152,6 +159,10 @@ class MigrationEngine:
         self.old_tags = load_json_files(root / "tags")
         self.old_performers = load_json_files(root / "performers")
         self.old_studios = load_json_files(root / "studios")
+        self.old_galleries = load_json_files(root / "galleries")
+        self.old_groups = load_json_files(root / "groups")
+        if not self.old_groups:
+            self.old_groups = load_json_files(root / "movies")
         self.old_scenes = load_json_files(root / "scenes")
         self.old_images = load_json_files(root / "images")
         self.old_files = build_old_file_index(root)
@@ -159,6 +170,7 @@ class MigrationEngine:
         self.old_tags_by_name = source_name_map(self.old_tags)
         self.old_performers_by_name = source_name_map(self.old_performers)
         self.old_studios_by_name = source_name_map(self.old_studios)
+        self.old_groups_by_name = source_name_map(self.old_groups)
 
         performer_name_counts: Dict[str, int] = {}
         for performer in self.old_performers:
@@ -173,19 +185,34 @@ class MigrationEngine:
         self.tags = stash.tags()
         self.performers = stash.performers()
         self.studios = stash.studios()
+        self.galleries = stash.galleries()
+        self.groups = stash.groups()
         self.scenes = stash.scenes()
         self.images = stash.images()
 
         self.scenes_by_id = {str(item["id"]): item for item in self.scenes}
         self.images_by_id = {str(item["id"]): item for item in self.images}
+        self.galleries_by_id = {str(item["id"]): item for item in self.galleries}
+        self.groups_by_id = {str(item["id"]): item for item in self.groups}
 
         self.scene_fp_index, self.scene_path_index = build_current_media_indexes(self.scenes)
         self.image_fp_index, self.image_path_index = build_current_media_indexes(self.images)
+        self.gallery_fp_index, self.gallery_path_index = build_current_media_indexes(self.galleries)
+        self.gallery_folder_index: Dict[str, List[str]] = {}
+        for gallery in self.galleries:
+            folder = gallery.get("folder") or {}
+            folder_path = str(folder.get("path") or "").strip()
+            if folder_path:
+                from migration_core import normalized_path
+                self.gallery_folder_index.setdefault(normalized_path(folder_path), []).append(str(gallery["id"]))
 
         self.resolved_tags: Dict[str, Optional[str]] = {}
         self.resolved_performers: Dict[str, Optional[str]] = {}
         self.resolved_studios: Dict[str, Optional[str]] = {}
+        self.resolved_galleries: Dict[str, Optional[str]] = {}
+        self.resolved_groups: Dict[str, Optional[str]] = {}
         self._studio_resolution_stack = set()
+        self._group_resolution_stack = set()
 
         self.stats: Dict[str, int] = {
             "source_files": len(self.old_files),
@@ -194,6 +221,8 @@ class MigrationEngine:
             "source_tags": len(self.old_tags),
             "source_performers": len(self.old_performers),
             "source_studios": len(self.old_studios),
+            "source_galleries": len(self.old_galleries),
+            "source_groups": len(self.old_groups),
             "matched_scenes": 0,
             "matched_images": 0,
             "updated_scenes": 0,
@@ -206,11 +235,24 @@ class MigrationEngine:
             "created_tags": 0,
             "created_performers": 0,
             "created_studios": 0,
+            "created_galleries": 0,
+            "created_groups": 0,
             "reused_tags": 0,
             "reused_performers": 0,
             "reused_studios": 0,
+            "reused_galleries": 0,
+            "reused_groups": 0,
+            "fuzzy_tag_reuse": 0,
             "fuzzy_performer_reuse": 0,
             "fuzzy_studio_reuse": 0,
+            "merged_duplicate_tags": 0,
+            "merged_duplicate_performers": 0,
+            "merged_duplicate_studios": 0,
+            "gallery_chapters_created": 0,
+            "scene_markers_created": 0,
+            "image_o_increments": 0,
+            "unresolved_galleries": 0,
+            "ambiguous_galleries": 0,
             "entity_identity_conflicts": 0,
             "ambiguous_entities_skipped": 0,
             "errors": 0,
