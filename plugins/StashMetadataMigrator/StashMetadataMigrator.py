@@ -21,6 +21,7 @@ from migration_core import (
     merge_stash_ids,
     merge_strings,
     normalize_name,
+    normalized_path,
     open_export_source,
     scalar_fill,
     source_name_map,
@@ -203,7 +204,6 @@ class MigrationEngine:
             folder = gallery.get("folder") or {}
             folder_path = str(folder.get("path") or "").strip()
             if folder_path:
-                from migration_core import normalized_path
                 self.gallery_folder_index.setdefault(normalized_path(folder_path), []).append(str(gallery["id"]))
 
         self.resolved_tags: Dict[str, Optional[str]] = {}
@@ -829,6 +829,372 @@ class MigrationEngine:
         data = self._studio_common_input(source, current=current)
         data["id"] = str(current["id"])
         return self.stash.update_studio(data)
+
+    @staticmethod
+    def _group_alias_values(entity: Mapping[str, Any]) -> List[str]:
+        raw = str(entity.get("aliases") or "").strip()
+        if not raw:
+            return []
+        values = [raw]
+        for separator in (";", "\n", ","):
+            if separator in raw:
+                values.extend(part.strip() for part in raw.split(separator))
+        return merge_strings(values)
+
+    def _gallery_cache_key(self, source: Mapping[str, Any]) -> str:
+        source_file = str(source.get("_migration_source_file") or "").strip()
+        if source_file:
+            return source_file
+        folder = str(source.get("folder_path") or "").strip()
+        if folder:
+            return "folder:" + normalized_path(folder)
+        zip_files = source.get("zip_files") or []
+        if zip_files:
+            return "zip:" + "|".join(normalized_path(str(v)) for v in zip_files)
+        return "title:" + normalize_name(str(source.get("title") or ""))
+
+    def _old_gallery_for_ref(self, ref: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        folder = str(ref.get("folder_path") or "").strip()
+        zip_files = [str(v) for v in (ref.get("zip_files") or []) if str(v).strip()]
+        title = str(ref.get("title") or "").strip()
+        for source in self.old_galleries:
+            if folder and normalized_path(str(source.get("folder_path") or "")) == normalized_path(folder):
+                return source
+            source_zips = {
+                normalized_path(str(v))
+                for v in (source.get("zip_files") or [])
+                if str(v).strip()
+            }
+            if zip_files and source_zips.intersection(normalized_path(v) for v in zip_files):
+                return source
+            if title and normalize_name(str(source.get("title") or "")) == normalize_name(title):
+                return source
+        return None
+
+    def _match_current_gallery(self, source: Mapping[str, Any]) -> Tuple[Optional[str], str]:
+        zip_files = [str(v) for v in (source.get("zip_files") or []) if str(v).strip()]
+        if zip_files:
+            match = match_old_media(
+                zip_files,
+                self.old_files,
+                self.gallery_fp_index,
+                self.gallery_path_index,
+            )
+            if match.object_id:
+                return match.object_id, match.kind
+            if match.kind == "ambiguous":
+                return None, "ambiguous"
+
+        folder = str(source.get("folder_path") or "").strip()
+        if folder:
+            ids = self.gallery_folder_index.get(normalized_path(folder), [])
+            if len(ids) == 1:
+                return ids[0], "exact-folder"
+            if len(ids) > 1:
+                return None, "ambiguous"
+            return None, "unmatched-file-backed"
+
+        title = str(source.get("title") or "").strip()
+        if title:
+            hits = [
+                str(gallery["id"])
+                for gallery in self.galleries
+                if normalize_name(str(gallery.get("title") or "")) == normalize_name(title)
+            ]
+            if len(hits) == 1:
+                return hits[0], "normalized-title"
+            if len(hits) > 1:
+                return None, "ambiguous"
+        return None, "missing"
+
+    def _gallery_input(
+        self,
+        source: Mapping[str, Any],
+        current: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        current = current or {}
+        data: Dict[str, Any] = {}
+        for src, dst in (
+            ("title", "title"), ("code", "code"), ("date", "date"),
+            ("details", "details"), ("photographer", "photographer"),
+        ):
+            value = scalar_fill(current.get(dst), source.get(src))
+            if value not in (None, ""):
+                data[dst] = value
+        rating = scalar_fill(current.get("rating100"), _clean_int(source.get("rating")))
+        if rating not in (None, "", 0):
+            data["rating100"] = rating
+        data["organized"] = bool(current.get("organized") or source.get("organized"))
+        data["urls"] = merge_strings(
+            current.get("urls") or [], source.get("urls") or [], [source.get("url") or ""]
+        )
+        tag_ids = [str(t.get("id")) for t in (current.get("tags") or []) if t.get("id")]
+        for tag_name in source.get("tags") or []:
+            resolved = self.resolve_tag(str(tag_name))
+            if resolved:
+                tag_ids.append(resolved)
+        if tag_ids:
+            data["tag_ids"] = _unique_ids(tag_ids)
+        performer_ids = [str(p.get("id")) for p in (current.get("performers") or []) if p.get("id")]
+        for performer_name in source.get("performers") or []:
+            resolved = self.resolve_performer(str(performer_name))
+            if resolved:
+                performer_ids.append(resolved)
+        if performer_ids:
+            data["performer_ids"] = _unique_ids(performer_ids)
+        studio_name = str(source.get("studio") or "").strip()
+        if studio_name and not current.get("studio"):
+            studio_id = self.resolve_studio(studio_name)
+            if studio_id:
+                data["studio_id"] = studio_id
+        custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
+        if current:
+            if custom_delta:
+                data["custom_fields"] = {"partial": custom_delta}
+        elif isinstance(source.get("custom_fields"), dict) and source.get("custom_fields"):
+            data["custom_fields"] = source["custom_fields"]
+        return data
+
+    def _restore_gallery_chapters(
+        self,
+        gallery_id: str,
+        source: Mapping[str, Any],
+        current: Mapping[str, Any],
+    ) -> None:
+        existing = {
+            (normalize_name(str(chapter.get("title") or "")), int(chapter.get("image_index") or 0))
+            for chapter in (current.get("chapters") or [])
+        }
+        for chapter in source.get("chapters") or []:
+            title = str(chapter.get("title") or "").strip()
+            index = _clean_int(chapter.get("image_index"))
+            if not title or index is None:
+                continue
+            key = (normalize_name(title), index)
+            if key in existing:
+                continue
+            self.stats["gallery_chapters_created"] += 1
+            if not self.dry_run:
+                self.stash.create_gallery_chapter(gallery_id, title, index)
+            existing.add(key)
+
+    def resolve_gallery_source(self, source: Dict[str, Any]) -> Optional[str]:
+        key = self._gallery_cache_key(source)
+        if key in self.resolved_galleries:
+            return self.resolved_galleries[key]
+        current_id, match_kind = self._match_current_gallery(source)
+        current: Optional[Dict[str, Any]] = None
+        if current_id:
+            current = self.galleries_by_id.get(str(current_id))
+            self.stats["reused_galleries"] += 1
+        elif match_kind == "ambiguous":
+            self.stats["ambiguous_galleries"] += 1
+            log("WARNING", f"Gallery '{source.get('title') or source.get('folder_path') or '(untitled)'}' has multiple current matches; skipped.")
+            self.resolved_galleries[key] = None
+            return None
+        elif source.get("zip_files") or source.get("folder_path"):
+            self.stats["unresolved_galleries"] += 1
+            log("WARNING", f"File-backed Gallery '{source.get('title') or source.get('folder_path') or '(untitled)'}' cannot be matched safely in the new Stash; skipped instead of creating a disconnected Gallery.")
+            self.resolved_galleries[key] = None
+            return None
+        else:
+            title = str(source.get("title") or "").strip()
+            if not title:
+                self.stats["unresolved_galleries"] += 1
+                self.resolved_galleries[key] = None
+                return None
+            self.stats["created_galleries"] += 1
+            if self.dry_run:
+                synthetic = "DRYRUN:GALLERY:" + normalize_name(title)
+                self.resolved_galleries[key] = synthetic
+                return synthetic
+            created = self.stash.create_gallery(self._gallery_input(source))
+            self.galleries.append(created)
+            self.galleries_by_id[str(created["id"])] = created
+            current = created
+            current_id = str(created["id"])
+
+        if current is None or current_id is None:
+            self.resolved_galleries[key] = None
+            return None
+        if not self.dry_run:
+            update = self._gallery_input(source, current)
+            update["id"] = str(current_id)
+            current = self.stash.update_gallery(update)
+            self._replace_entity(self.galleries, current)
+            self.galleries_by_id[str(current_id)] = current
+        self._restore_gallery_chapters(str(current_id), source, current)
+        self.resolved_galleries[key] = str(current_id)
+        return str(current_id)
+
+    def resolve_gallery_ref(self, ref: Mapping[str, Any]) -> Optional[str]:
+        source = self._old_gallery_for_ref(ref)
+        if source is not None:
+            return self.resolve_gallery_source(source)
+        title = str(ref.get("title") or "").strip()
+        if title:
+            hits = [
+                gallery for gallery in self.galleries
+                if normalize_name(str(gallery.get("title") or "")) == normalize_name(title)
+            ]
+            if len(hits) == 1:
+                return str(hits[0]["id"])
+        self.stats["unresolved_galleries"] += 1
+        return None
+
+    def _group_match(self, name: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+        target = normalize_name(name)
+        compact_target = "".join(ch for ch in target if ch.isalnum())
+        hits: List[Dict[str, Any]] = []
+        for group in self.groups:
+            values = [str(group.get("name") or ""), *self._group_alias_values(group)]
+            if any(
+                normalize_name(value) == target
+                or (
+                    len(compact_target) >= 4
+                    and "".join(ch for ch in normalize_name(value) if ch.isalnum()) == compact_target
+                )
+                for value in values
+            ):
+                hits.append(group)
+        if len(hits) == 1:
+            return hits[0], False
+        return None, len(hits) > 1
+
+    def _group_input(
+        self,
+        source: Mapping[str, Any],
+        current: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        current = current or {}
+        data: Dict[str, Any] = {}
+        name = str(source.get("name") or "").strip()
+        if name:
+            data["name"] = str(current.get("name") or name)
+        current_alias = str(current.get("aliases") or "").strip()
+        old_alias = str(source.get("aliases") or "").strip()
+        aliases = merge_strings([current_alias], [old_alias])
+        if aliases:
+            data["aliases"] = "; ".join(aliases)
+        for src, dst in (("date", "date"), ("director", "director"), ("synopsis", "synopsis")):
+            value = scalar_fill(current.get(dst), source.get(src))
+            if value not in (None, ""):
+                data[dst] = value
+        duration = scalar_fill(current.get("duration"), _clean_int(source.get("duration")))
+        if duration not in (None, "", 0):
+            data["duration"] = duration
+        rating = scalar_fill(current.get("rating100"), _clean_int(source.get("rating")))
+        if rating not in (None, "", 0):
+            data["rating100"] = rating
+        data["urls"] = merge_strings(current.get("urls") or [], source.get("urls") or [], [source.get("url") or ""])
+        tag_ids = [str(t.get("id")) for t in (current.get("tags") or []) if t.get("id")]
+        for tag_name in source.get("tags") or []:
+            resolved = self.resolve_tag(str(tag_name))
+            if resolved:
+                tag_ids.append(resolved)
+        if tag_ids:
+            data["tag_ids"] = _unique_ids(tag_ids)
+        studio_name = str(source.get("studio") or "").strip()
+        if studio_name and not current.get("studio"):
+            studio_id = self.resolve_studio(studio_name)
+            if studio_id:
+                data["studio_id"] = studio_id
+        if not current.get("front_image_path") and source.get("front_image"):
+            data["front_image"] = source.get("front_image")
+        if not current.get("back_image_path") and source.get("back_image"):
+            data["back_image"] = source.get("back_image")
+        custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
+        if current:
+            if custom_delta:
+                data["custom_fields"] = {"partial": custom_delta}
+        elif isinstance(source.get("custom_fields"), dict) and source.get("custom_fields"):
+            data["custom_fields"] = source["custom_fields"]
+        return data
+
+    def resolve_group(self, name: str) -> Optional[str]:
+        key = normalize_name(name)
+        if not key:
+            return None
+        if key in self.resolved_groups:
+            return self.resolved_groups[key]
+        if key in self._group_resolution_stack:
+            return None
+        self._group_resolution_stack.add(key)
+        try:
+            source = self._source_entity(self.old_groups_by_name, name)
+            current, ambiguous = self._group_match(name)
+            if ambiguous:
+                self.stats["ambiguous_entities_skipped"] += 1
+                log("WARNING", f"Group '{name}' has ambiguous current matches; relationship skipped.")
+                self.resolved_groups[key] = None
+                return None
+            if current is None:
+                self.stats["created_groups"] += 1
+                if self.dry_run:
+                    synthetic = "DRYRUN:GROUP:" + key
+                    self.resolved_groups[key] = synthetic
+                    return synthetic
+                created = self.stash.create_group(self._group_input(source))
+                self.groups.append(created)
+                self.groups_by_id[str(created["id"])] = created
+                current = created
+            else:
+                self.stats["reused_groups"] += 1
+
+            group_id = str(current["id"])
+            if not self.dry_run:
+                update = self._group_input(source, current)
+                update["id"] = group_id
+                current = self.stash.update_group(update)
+                self._replace_entity(self.groups, current)
+                self.groups_by_id[group_id] = current
+            self.resolved_groups[key] = group_id
+            return group_id
+        finally:
+            self._group_resolution_stack.discard(key)
+
+    def restore_group_hierarchy(self) -> None:
+        for source in self.old_groups:
+            name = str(source.get("name") or "").strip()
+            group_id = self.resolve_group(name)
+            if not group_id or group_id.startswith("DRYRUN:"):
+                continue
+            current = self.groups_by_id.get(group_id) or {}
+            existing: Dict[str, Optional[str]] = {
+                str(item.get("group", {}).get("id") or ""): item.get("description")
+                for item in (current.get("sub_groups") or [])
+                if str(item.get("group", {}).get("id") or "")
+            }
+            changed = False
+            for item in source.get("sub_groups") or []:
+                child_name = str(item.get("name") or "").strip()
+                child_id = self.resolve_group(child_name)
+                if not child_id or child_id == group_id or child_id.startswith("DRYRUN:"):
+                    continue
+                if child_id not in existing:
+                    existing[child_id] = item.get("description")
+                    changed = True
+            if changed and not self.dry_run:
+                self.stash.update_group({
+                    "id": group_id,
+                    "sub_groups": [
+                        {"group_id": child_id, "description": description}
+                        for child_id, description in existing.items()
+                    ],
+                })
+
+    def prepare_metadata_entities(self) -> None:
+        for source in self.old_tags:
+            self.resolve_tag(str(source.get("name") or ""))
+        for source in self.old_performers:
+            self.resolve_performer(str(source.get("name") or ""))
+        for source in self.old_studios:
+            self.resolve_studio(str(source.get("name") or ""))
+        for source in self.old_groups:
+            self.resolve_group(str(source.get("name") or ""))
+        for source in self.old_galleries:
+            self.resolve_gallery_source(source)
+        self.restore_group_hierarchy()
 
     @staticmethod
     def _replace_entity(collection: List[Dict[str, Any]], replacement: Dict[str, Any]) -> None:
