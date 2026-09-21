@@ -1,6 +1,6 @@
 name: Stash Metadata Migrator
 description: Safely restore complete metadata from an old Stash JSON export onto an existing scanned library, including conservative entity deduplication, Galleries, Groups, chapters, markers, hierarchy, history, and automatic pre-restore backup.
-version: 1.1.3
+version: 1.1.4
 exec:
   - python
   - "{pluginDir}/StashMetadataMigrator.py"
