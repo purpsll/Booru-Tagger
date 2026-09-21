@@ -254,9 +254,13 @@ class Stash:
         query = """
         mutation MigratorCreateTag($input: TagCreateInput!) {
           tagCreate(input: $input) {
-            id name aliases sort_name description favorite ignore_auto_tag
+            id name aliases sort_name description favorite ignore_auto_tag image_path
             stash_ids { endpoint stash_id }
+            parents { id name }
+            children { id name }
             custom_fields
+            scene_count scene_marker_count image_count gallery_count
+            performer_count studio_count group_count
           }
         }
         """
@@ -287,10 +291,11 @@ class Stash:
             id name disambiguation alias_list urls gender birthdate ethnicity country
             eye_color height_cm measurements fake_tits penis_length circumcised
             career_start career_end tattoos piercings favorite rating100 details
-            death_date hair_color weight ignore_auto_tag
+            death_date hair_color weight ignore_auto_tag image_path
             stash_ids { endpoint stash_id }
             tags { id name }
             custom_fields
+            scene_count image_count gallery_count group_count
           }
         }
         """
@@ -322,10 +327,14 @@ class Stash:
         query = """
         mutation MigratorCreateStudio($input: StudioCreateInput!) {
           studioCreate(input: $input) {
-            id name aliases urls rating100 favorite details ignore_auto_tag organized
+            id name aliases urls rating100 favorite details ignore_auto_tag organized image_path
+            parent_studio { id name }
+            child_studios { id name }
             stash_ids { endpoint stash_id }
             tags { id name }
             custom_fields
+            scene_count(depth: 0) image_count(depth: 0)
+            gallery_count(depth: 0) group_count(depth: 0)
           }
         }
         """
