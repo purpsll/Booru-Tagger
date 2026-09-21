@@ -83,6 +83,8 @@ class FakeStash:
 
     def backup_database(self):
         self.calls.append(("backup_database", {}))
+        if getattr(self, "fail_backup", False):
+            raise RuntimeError("backup failed")
         return None
 
     def update_tag(self, data):
@@ -401,6 +403,113 @@ class MigrationEngineTests(unittest.TestCase):
             self.assertEqual(resolved, "t1")
             self.assertEqual(engine.stats["merged_duplicate_tags"], 1)
             self.assertTrue(any(name == "merge_tags" for name, _ in stash.calls))
+
+    def test_backup_failure_aborts_before_metadata_mutations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            stash.fail_backup = True
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            with self.assertRaises(RuntimeError):
+                engine.run()
+            self.assertEqual(stash.calls, [("backup_database", {})])
+
+    def test_gallery_mapping_can_be_inferred_from_uniquely_matched_scene_relationship(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "galleries", "gallery.json", {
+                "folder_path": r"D:\Old\Gallery",
+                "title": "Moved Gallery",
+            })
+            scene_path = pathlib.Path(tmp) / "scenes" / "scene.json"
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            scene["galleries"] = [{"folder_path": r"D:\Old\Gallery"}]
+            scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+            stash = FakeStash()
+            stash._galleries = [{
+                "id": "g-existing", "title": "Moved Gallery", "code": None,
+                "urls": [], "date": None, "details": None, "photographer": None,
+                "rating100": None, "organized": False, "files": [],
+                "folder": {"id": "folder-new", "path": "/new/Gallery"},
+                "chapters": [], "studio": None, "tags": [], "performers": [],
+                "scenes": [{"id": "scene1"}], "custom_fields": {},
+            }]
+            stash._scenes[0]["galleries"] = [{"id": "g-existing", "title": "Moved Gallery"}]
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=True)
+            engine.run()
+            key = engine._gallery_relation_key({"folder_path": r"D:\Old\Gallery"})
+            self.assertEqual(engine.inferred_gallery_map[key], "g-existing")
+            self.assertEqual(engine.stats["unresolved_galleries"], 0)
+
+    def test_tag_hierarchy_and_missing_entity_artwork_are_restored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            parent_path = pathlib.Path(tmp) / "tags" / "parent.json"
+            parent_path.write_text(json.dumps({"name": "Body"}), encoding="utf-8")
+            tag_path = pathlib.Path(tmp) / "tags" / "tag.json"
+            tag = json.loads(tag_path.read_text(encoding="utf-8"))
+            tag["parents"] = ["Body"]
+            tag["image"] = "data:image/png;base64,AAAA"
+            tag_path.write_text(json.dumps(tag), encoding="utf-8")
+
+            stash = FakeStash()
+            stash._tags[0].update({
+                "parents": [], "children": [], "image_path": "/tag/t1/image?default=true",
+                "scene_count": 0, "scene_marker_count": 0, "image_count": 1,
+                "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                "group_count": 0,
+            })
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            engine.run()
+
+            updates = [data for name, data in stash.calls if name == "update_tag"]
+            self.assertTrue(any(data.get("image") == "data:image/png;base64,AAAA" for data in updates))
+            self.assertTrue(any("parent_ids" in data for data in updates))
+            self.assertEqual(engine.stats["tag_parent_links_added"], 1)
+
+    def test_safe_duplicate_performers_are_collapsed_during_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            base = stash._performers[0]
+            base.update({
+                "scene_count": 4, "image_count": 0, "gallery_count": 0, "group_count": 0,
+                "image_path": "/performer/p1/image?default=true",
+            })
+            duplicate = dict(base)
+            duplicate.update({
+                "id": "p2", "name": "Jane Doe", "alias_list": [],
+                "scene_count": 0,
+            })
+            stash._performers.append(duplicate)
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_performer("Jane Doe")
+            self.assertEqual(resolved, "p1")
+            self.assertEqual(engine.stats["merged_duplicate_performers"], 1)
+            self.assertTrue(any(name == "merge_performers" for name, _ in stash.calls))
+
+    def test_safe_duplicate_studios_are_collapsed_during_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = FakeStash()
+            base = stash._studios[0]
+            base.update({
+                "scene_count": 4, "image_count": 0, "gallery_count": 0, "group_count": 0,
+                "image_path": "/studio/s1/image?default=true", "child_studios": [],
+            })
+            duplicate = dict(base)
+            duplicate.update({
+                "id": "s2", "name": "Artist Studio", "aliases": [],
+                "scene_count": 0,
+            })
+            stash._studios.append(duplicate)
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_studio("Artist Studio")
+            self.assertEqual(resolved, "s1")
+            self.assertEqual(engine.stats["merged_duplicate_studios"], 1)
+            self.assertTrue(any(name == "merge_studios" for name, _ in stash.calls))
 
     def test_duplicate_old_performer_display_name_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
