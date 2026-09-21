@@ -1,10 +1,10 @@
-# Booru Importer v3.26.24
+# Booru Importer v3.26.25\n\n**v3.26.25 fixes Stash native tag-merge alias collisions.** Before calling `tagsMerge`, Booru Importer now temporarily removes source-name aliases that are already owned inside the same safe merge group; Stash immediately recreates those names as aliases on the survivor. If an unrelated tag owns the alias, the group is left for manual review instead of failing or mutating the unrelated tag.
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.24 extends the conservative cleanup system to Stash Performers and Studios. Formatting-equivalent duplicates can be merged safely, while fuzzy names, conflicting rich metadata, Studio hierarchy conflicts, and disagreeing same-endpoint Stash IDs remain review-only. v3.26.23 added the equivalent Tag cleanup workflow.
+v3.26.25 extends the conservative cleanup system to Stash Performers and Studios. Formatting-equivalent duplicates can be merged safely, while fuzzy names, conflicting rich metadata, Studio hierarchy conflicts, and disagreeing same-endpoint Stash IDs remain review-only. v3.26.23 added the equivalent Tag cleanup workflow.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
