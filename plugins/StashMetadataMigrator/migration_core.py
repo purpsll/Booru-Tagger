@@ -74,7 +74,14 @@ class EntityMatch:
     second_score: float
 
 
-def find_entity_match(
+@dataclass(frozen=True)
+class EntityDecision:
+    match: Optional[EntityMatch]
+    ambiguous: bool
+    reason: str
+
+
+def decide_entity_match(
     source_name: str,
     entities: Sequence[Dict[str, Any]],
     *,
@@ -82,10 +89,10 @@ def find_entity_match(
     allow_fuzzy: bool,
     threshold: float,
     margin: float,
-) -> Optional[EntityMatch]:
+) -> EntityDecision:
     source_norm = normalize_name(source_name)
     if not source_norm:
-        return None
+        return EntityDecision(None, False, "empty name")
 
     normalized_hits: List[Dict[str, Any]] = []
     for entity in entities:
@@ -95,9 +102,9 @@ def find_entity_match(
             normalized_hits.append(entity)
 
     if len(normalized_hits) == 1:
-        return EntityMatch(normalized_hits[0], "normalized", 1.0, 0.0)
+        return EntityDecision(EntityMatch(normalized_hits[0], "normalized", 1.0, 0.0), False, "normalized match")
     if len(normalized_hits) > 1:
-        return None
+        return EntityDecision(None, True, "multiple normalized name/alias matches")
 
     source_compact = compact_name(source_name)
     if len(source_compact) >= 4:
@@ -108,12 +115,12 @@ def find_entity_match(
             if any(compact_name(value) == source_compact for value in values):
                 compact_hits.append(entity)
         if len(compact_hits) == 1:
-            return EntityMatch(compact_hits[0], "formatting", 1.0, 0.0)
+            return EntityDecision(EntityMatch(compact_hits[0], "formatting", 1.0, 0.0), False, "formatting-equivalent match")
         if len(compact_hits) > 1:
-            return None
+            return EntityDecision(None, True, "multiple formatting-equivalent matches")
 
     if not allow_fuzzy or len(source_norm) < 5:
-        return None
+        return EntityDecision(None, False, "no match")
 
     scored: List[Tuple[float, Dict[str, Any]]] = []
     for entity in entities:
@@ -131,15 +138,39 @@ def find_entity_match(
             scored.append((best, entity))
 
     if not scored:
-        return None
+        return EntityDecision(None, False, "no match")
     scored.sort(key=lambda item: item[0], reverse=True)
     best_score, best_entity = scored[0]
     second = scored[1][0] if len(scored) > 1 else 0.0
     if best_score < threshold:
-        return None
+        return EntityDecision(None, False, "no qualifying fuzzy match")
     if len(scored) > 1 and (best_score - second) < margin:
-        return None
-    return EntityMatch(best_entity, "fuzzy", best_score, second)
+        return EntityDecision(None, True, "fuzzy candidates are too close")
+    return EntityDecision(
+        EntityMatch(best_entity, "fuzzy", best_score, second),
+        False,
+        "clear fuzzy match",
+    )
+
+
+def find_entity_match(
+    source_name: str,
+    entities: Sequence[Dict[str, Any]],
+    *,
+    alias_field: str,
+    allow_fuzzy: bool,
+    threshold: float,
+    margin: float,
+) -> Optional[EntityMatch]:
+    """Compatibility wrapper returning only an unambiguous match."""
+    return decide_entity_match(
+        source_name,
+        entities,
+        alias_field=alias_field,
+        allow_fuzzy=allow_fuzzy,
+        threshold=threshold,
+        margin=margin,
+    ).match
 
 
 def load_json_files(directory: Path) -> List[Dict[str, Any]]:
