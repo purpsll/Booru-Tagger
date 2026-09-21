@@ -15,7 +15,25 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 
-STRONG_FINGERPRINT_TYPES = ("md5", "oshash")
+STRONG_FINGERPRINT_TYPES = ("md5", "oshash", "sha1", "sha256", "sha512")
+EXCLUDED_IDENTITY_FINGERPRINT_TYPES = {"phash"}
+
+
+def normalize_fingerprint_type(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+    aliases = {
+        "md5": "md5",
+        "oshash": "oshash",
+        "opensubtitles": "oshash",
+        "opensubtitleshash": "oshash",
+        "sha1": "sha1",
+        "sha256": "sha256",
+        "sha512": "sha512",
+        "phash": "phash",
+        "perceptualhash": "phash",
+    }
+    return aliases.get(compact, compact)
 
 
 def normalize_name(value: str) -> str:
@@ -119,7 +137,11 @@ def decide_entity_match(
         if len(compact_hits) > 1:
             return EntityDecision(None, True, "multiple formatting-equivalent matches")
 
-    if not allow_fuzzy or len(source_norm) < 5:
+    # Fuzzy comparison uses the compact canonical form so punctuation and
+    # separators do not distort similarity. Examples:
+    # big_breasts / Big-Breasts / big breasts / big.breasts -> bigbreasts.
+    source_fuzzy = compact_name(source_name)
+    if not allow_fuzzy or len(source_fuzzy) < 5:
         return EntityDecision(None, False, "no match")
 
     scored: List[Tuple[float, Dict[str, Any]]] = []
@@ -128,12 +150,12 @@ def decide_entity_match(
         values = [str(entity.get("name") or "")]
         values.extend(str(v or "") for v in (entity.get(alias_field) or []))
         for value in values:
-            candidate = normalize_name(value)
-            if not candidate or candidate[0] != source_norm[0]:
+            candidate = compact_name(value)
+            if not candidate or candidate[0] != source_fuzzy[0]:
                 continue
-            if abs(len(candidate) - len(source_norm)) > 4:
+            if abs(len(candidate) - len(source_fuzzy)) > 4:
                 continue
-            best = max(best, difflib.SequenceMatcher(None, source_norm, candidate).ratio())
+            best = max(best, difflib.SequenceMatcher(None, source_fuzzy, candidate).ratio())
         if best:
             scored.append((best, entity))
 
@@ -198,7 +220,7 @@ def build_old_file_index(root: Path) -> Dict[str, Dict[str, Any]]:
             continue
         fps: Dict[str, str] = {}
         for fp in item.get("fingerprints") or []:
-            fp_type = str(fp.get("type") or "").casefold().strip()
+            fp_type = normalize_fingerprint_type(str(fp.get("type") or ""))
             value = str(fp.get("fingerprint") or "").casefold().strip()
             if fp_type and value:
                 fps[fp_type] = value
@@ -224,7 +246,7 @@ def build_current_media_indexes(
             if path:
                 path_index.setdefault(normalized_path(path), []).append(obj_id)
             for fp in file.get("fingerprints") or []:
-                fp_type = str(fp.get("type") or "").casefold().strip()
+                fp_type = normalize_fingerprint_type(str(fp.get("type") or ""))
                 value = str(fp.get("value") or "").casefold().strip()
                 if fp_type in STRONG_FINGERPRINT_TYPES and value:
                     fp_index.setdefault((fp_type, value), []).append(obj_id)
@@ -279,7 +301,40 @@ def match_old_media(
         return MediaMatch(next(iter(path_candidates)), "exact-path", "exact current path")
     if len(path_candidates) > 1:
         return MediaMatch(None, "ambiguous", "exact path maps to multiple objects")
-    return MediaMatch(None, "unmatched", "no exact fingerprint or exact-path match")
+    inspected: List[str] = []
+    for old_path in old_paths or []:
+        path_text = str(old_path)
+        info = old_files.get(path_text)
+        if not info:
+            inspected.append(f"{path_text} [no exported file record]")
+            continue
+        fingerprints = info.get("fingerprints") or {}
+        fp_bits = []
+        for fp_type in STRONG_FINGERPRINT_TYPES:
+            value = str(fingerprints.get(fp_type) or "").strip()
+            if value:
+                fp_bits.append(f"{fp_type}:{value[:12]}")
+        excluded = sorted(
+            fp_type for fp_type, value in fingerprints.items()
+            if value and normalize_fingerprint_type(fp_type) in EXCLUDED_IDENTITY_FINGERPRINT_TYPES
+        )
+        if fp_bits:
+            suffix = f"; excluded identity types: {', '.join(excluded)}" if excluded else ""
+            inspected.append(f"{path_text} [{', '.join(fp_bits)}{suffix}]")
+        elif excluded:
+            inspected.append(
+                f"{path_text} [no strong exact content hash; excluded identity types: "
+                f"{', '.join(excluded)}]"
+            )
+        else:
+            inspected.append(f"{path_text} [no strong exact content hash]")
+    detail = "no exact fingerprint or exact-path match"
+    if inspected:
+        preview = "; ".join(inspected[:3])
+        if len(inspected) > 3:
+            preview += f"; +{len(inspected) - 3} more"
+        detail += f"; old file evidence: {preview}"
+    return MediaMatch(None, "unmatched", detail)
 
 
 def _safe_zip_members(archive: zipfile.ZipFile, target: Path) -> None:

@@ -1,4 +1,4 @@
-# Stash Metadata Migrator v1.1.5
+# Stash Metadata Migrator v1.1.6
 
 **Stash Metadata Migrator restores an old Stash JSON export into a new Stash that has already scanned the real media files—without recreating Scene, Image, or File records.**
 
@@ -131,6 +131,24 @@ Unsupported or malformed artwork is skipped with a warning instead of aborting t
 When old metadata is merged into an existing Tag, the migrator now preflights every alias against all current Tag primary names and aliases. If an old alias is already owned elsewhere, that alias is skipped instead of allowing Stash to reject the entire `tagUpdate`.
 
 If a unique current primary-name match disagrees with an external Stash-ID match that points at a different current Tag, the media relationship follows the current primary-name Tag and the conflicting old Tag entity metadata is not merged. External IDs are used as fallback identity or to disambiguate otherwise ambiguous primary-name matches; they do not override a unique current primary-name relationship.
+
+### Canonical Tag comparison
+
+Tag matching and review-candidate scoring use a compact canonical form before similarity is calculated. Case, spaces, underscores, dashes, dots, slashes, brackets, punctuation, and repeated whitespace are removed from the comparison key.
+
+Examples:
+
+`big_breasts`, `Big-Breasts`, `big breasts`, and `big.breasts` all compare as `bigbreasts`.
+
+This keeps formatting differences from artificially lowering match confidence while preserving the existing identity-conflict and token-subset safety checks.
+
+### Exact media hash matching and diagnostics
+
+Media identity compares hashes only when the **same algorithm** matches exactly. Supported exact content hashes are MD5, OShash, SHA-1, SHA-256, and SHA-512 (including common punctuation/case variants such as `SHA-256`). Different algorithms are never compared to each other.
+
+Perceptual hashes such as pHash are deliberately excluded from identity matching because an exact or near perceptual hash is not a safe proof that two media records are the same file.
+
+When a Scene/Image still cannot be matched by an exact content hash or exact path, the warning shows the old exported file path plus the hash evidence that was actually present, including excluded pHash-only cases. This makes moved/missing media diagnosable without falling back to unsafe filename guessing.
 
 ### Duplicate-averse Tag creation
 

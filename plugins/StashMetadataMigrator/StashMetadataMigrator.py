@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from migration_core import (
     build_current_media_indexes,
     build_old_file_index,
+    compact_name,
     decide_entity_match,
     EntityMatch,
     load_json_files,
@@ -475,7 +476,7 @@ class MigrationEngine:
         """Return near matches that make creating another Tag unsafe."""
         import difflib
 
-        source_norm = normalize_name(name)
+        source_norm = compact_name(name)
         if len(source_norm) < 4:
             return []
 
@@ -485,7 +486,7 @@ class MigrationEngine:
             values.extend(str(value or "") for value in (tag.get("aliases") or []))
             best = 0.0
             for value in values:
-                candidate = normalize_name(value)
+                candidate = compact_name(value)
                 if not candidate:
                     continue
                 if candidate == source_norm:
@@ -2195,7 +2196,11 @@ class MigrationEngine:
             if not match.object_id:
                 key = "ambiguous_scenes" if match.kind == "ambiguous" else "unmatched_scenes"
                 self.stats[key] += 1
-                log("WARNING", f"Scene '{old.get('title') or '(untitled)'}': {match.detail}; skipped.")
+                display = str(old.get("title") or "").strip()
+                if not display:
+                    files = old.get("files") or []
+                    display = str(files[0]) if files else "(untitled)"
+                log("WARNING", f"Scene '{display}': {match.detail}; skipped.")
             elif match.object_id in used_scene_targets:
                 self.stats["source_target_collisions"] += 1
                 log("WARNING", f"Multiple old scene records resolve to current Scene {match.object_id}; later record skipped.")
@@ -2223,7 +2228,11 @@ class MigrationEngine:
             if not match.object_id:
                 key = "ambiguous_images" if match.kind == "ambiguous" else "unmatched_images"
                 self.stats[key] += 1
-                log("WARNING", f"Image '{old.get('title') or '(untitled)'}': {match.detail}; skipped.")
+                display = str(old.get("title") or "").strip()
+                if not display:
+                    files = old.get("files") or []
+                    display = str(files[0]) if files else "(untitled)"
+                log("WARNING", f"Image '{display}': {match.detail}; skipped.")
             elif match.object_id in used_image_targets:
                 self.stats["source_target_collisions"] += 1
                 log("WARNING", f"Multiple old image records resolve to current Image {match.object_id}; later record skipped.")
