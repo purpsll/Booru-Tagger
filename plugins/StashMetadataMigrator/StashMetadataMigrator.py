@@ -1483,6 +1483,25 @@ class MigrationEngine:
         ]:
             input_data["performer_ids"] = performer_ids
 
+        gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        for ref in old.get("galleries") or []:
+            if isinstance(ref, dict):
+                gallery_id = self.resolve_gallery_ref(ref)
+                if gallery_id:
+                    gallery_ids.append(gallery_id)
+        gallery_ids = _unique_ids(gallery_ids)
+        current_gallery_ids = [
+            str(item.get("id"))
+            for item in (current.get("galleries") or [])
+            if item.get("id")
+        ]
+        if gallery_ids != current_gallery_ids:
+            input_data["gallery_ids"] = gallery_ids
+
         old_studio = str(old.get("studio") or "").strip()
         if old_studio and not current.get("studio"):
             studio_id = self.resolve_studio(old_studio)
@@ -1493,9 +1512,16 @@ class MigrationEngine:
         if custom_delta:
             input_data["custom_fields"] = {"partial": custom_delta}
 
-        changed = len(input_data) > 1
-        if changed and not self.dry_run:
+        current_o = _clean_int(current.get("o_counter")) or 0
+        old_o = _clean_int(old.get("o_counter")) or 0
+        o_delta = max(0, old_o - current_o)
+        changed = len(input_data) > 1 or o_delta > 0
+        if len(input_data) > 1 and not self.dry_run:
             self.stash.update_image(input_data)
+        if o_delta:
+            self.stats["image_o_increments"] += o_delta
+            if not self.dry_run:
+                self.stash.increment_image_o(str(current["id"]), o_delta)
         return changed
 
     def run(self) -> Dict[str, int]:
