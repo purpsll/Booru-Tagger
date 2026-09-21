@@ -13,6 +13,9 @@ EXPECTED_TASKS = [
     "3. Deep Match All Unresolved Images",
     "4. Recheck Review Candidates",
     "5. Retry No-Match Images",
+    "6. Scan Similar Tags (No Changes)",
+    "7. Merge Safe Duplicate Tags",
+    "8. Show Similar Tag Review Candidates",
 ]
 
 
