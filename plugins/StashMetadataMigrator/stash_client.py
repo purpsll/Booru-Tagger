@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 
 PLUGIN_ID = "StashMetadataMigrator"
-USER_AGENT = "StashMetadataMigrator/1.1.0"
+USER_AGENT = "StashMetadataMigrator/1.1.1"
 
 
 def connection_endpoint(conn: Dict[str, Any]) -> str:

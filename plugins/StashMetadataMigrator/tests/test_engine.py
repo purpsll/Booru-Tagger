@@ -46,6 +46,7 @@ class FakeStash:
         }]
         self._galleries = []
         self._groups = []
+        self._images = []
         self._scenes = [{
             "id": "scene1", "title": None, "code": None, "details": None,
             "director": None, "urls": [], "date": None, "rating100": None,
@@ -79,7 +80,7 @@ class FakeStash:
         return [dict(x) for x in self._scenes]
 
     def images(self):
-        return []
+        return [dict(x) for x in self._images]
 
     def backup_database(self):
         self.calls.append(("backup_database", {}))
@@ -380,6 +381,70 @@ class MigrationEngineTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 engine.run()
             self.assertEqual(stash.calls, [])
+
+    def test_existing_primary_tag_is_attached_to_image_even_when_alias_is_ambiguous_and_stash_id_conflicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            write_json(tmp, "files", "image.json", {
+                "type": "image", "path": r"D:\Old\image.jpg", "size": 456,
+                "fingerprints": [{"type": "md5", "fingerprint": "feedface"}],
+            })
+            write_json(tmp, "tags", "pov.json", {
+                "name": "POV",
+                "stash_ids": [{"endpoint": "https://box.example", "stash_id": "old-pov"}],
+            })
+            write_json(tmp, "images", "image.json", {
+                "title": "POV test",
+                "files": [r"D:\Old\image.jpg"],
+                "tags": ["POV"],
+            })
+
+            stash = FakeStash()
+            stash._tags.extend([
+                {
+                    "id": "t-pov", "name": "POV", "aliases": [],
+                    "sort_name": None, "description": None, "favorite": False,
+                    "ignore_auto_tag": False,
+                    "stash_ids": [{"endpoint": "https://box.example", "stash_id": "current-pov"}],
+                    "custom_fields": {}, "parents": [], "children": [], "image_path": None,
+                    "scene_count": 0, "scene_marker_count": 0, "image_count": 10,
+                    "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                    "group_count": 0,
+                },
+                {
+                    "id": "t-other", "name": "point_of_view", "aliases": ["POV"],
+                    "sort_name": None, "description": None, "favorite": False,
+                    "ignore_auto_tag": False, "stash_ids": [], "custom_fields": {},
+                    "parents": [], "children": [], "image_path": None,
+                    "scene_count": 0, "scene_marker_count": 0, "image_count": 1,
+                    "gallery_count": 0, "performer_count": 0, "studio_count": 0,
+                    "group_count": 0,
+                },
+            ])
+            stash._images.append({
+                "id": "image1", "title": None, "code": None, "details": None,
+                "photographer": None, "urls": [], "date": None, "rating100": None,
+                "organized": False, "o_counter": 0, "studio": None,
+                "tags": [], "performers": [], "galleries": [], "custom_fields": {},
+                "files": [{
+                    "id": "if1", "path": "/new/image.jpg", "size": 456,
+                    "fingerprints": [{"type": "md5", "value": "feedface"}],
+                }],
+            })
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            stats = engine.run()
+
+            image_update = next(
+                data for name, data in stash.calls
+                if name == "update_image" and data["id"] == "image1"
+            )
+            self.assertEqual(image_update["tag_ids"], ["t-pov"])
+            self.assertEqual(stats["tag_identity_conflict_relationship_reuse"], 1)
+            self.assertFalse(any(
+                name == "update_tag" and data.get("id") == "t-pov"
+                for name, data in stash.calls
+            ))
 
     def test_safe_duplicate_tags_are_collapsed_during_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:

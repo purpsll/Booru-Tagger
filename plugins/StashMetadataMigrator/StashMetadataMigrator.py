@@ -16,6 +16,7 @@ from migration_core import (
     build_current_media_indexes,
     build_old_file_index,
     decide_entity_match,
+    EntityMatch,
     load_json_files,
     match_old_media,
     merge_stash_ids,
@@ -249,6 +250,8 @@ class MigrationEngine:
             "reused_galleries": 0,
             "reused_groups": 0,
             "fuzzy_tag_reuse": 0,
+            "primary_tag_reuse": 0,
+            "tag_identity_conflict_relationship_reuse": 0,
             "fuzzy_performer_reuse": 0,
             "fuzzy_studio_reuse": 0,
             "merged_duplicate_tags": 0,
@@ -377,6 +380,42 @@ class MigrationEngine:
         )
         return merged
 
+    def _primary_tag_match(self, name: str) -> Tuple[Optional[EntityMatch], bool]:
+        """Prefer current Tag primary names over aliases for relationships.
+
+        Returns (match, ambiguous). Exact case-insensitive primary name wins first,
+        followed by a unique normalized/formatting-equivalent primary name.
+        """
+        raw = str(name or "").strip()
+        if not raw:
+            return None, False
+
+        exact_hits = [
+            tag for tag in self.tags
+            if str(tag.get("name") or "").strip().casefold() == raw.casefold()
+        ]
+
+        normalized = normalize_name(raw)
+        normalized_hits = [
+            tag for tag in self.tags
+            if normalize_name(str(tag.get("name") or "")) == normalized
+        ]
+
+        # Formatting-equivalent primary duplicates (for example Big Breasts /
+        # big_breasts) should still be collapsed safely instead of allowing an
+        # exact-spelling variant to bypass deduplication.
+        if len(normalized_hits) > 1:
+            return None, True
+
+        if len(exact_hits) == 1:
+            return EntityMatch(exact_hits[0], "primary-exact", 1.0, 0.0), False
+        if len(exact_hits) > 1:
+            return None, True
+
+        if len(normalized_hits) == 1:
+            return EntityMatch(normalized_hits[0], "primary-normalized", 1.0, 0.0), False
+        return None, False
+
     def resolve_tag(self, name: str) -> Optional[str]:
         key = normalize_name(name)
         if not key:
@@ -384,30 +423,58 @@ class MigrationEngine:
         if key in self.resolved_tags:
             return self.resolved_tags[key]
 
-        decision = decide_entity_match(
-            name,
-            self.tags,
-            alias_field="aliases",
-            allow_fuzzy=True,
-            threshold=TAG_THRESHOLD,
-            margin=TAG_MARGIN,
-        )
+        primary_match, primary_ambiguous = self._primary_tag_match(name)
         source = self._source_entity(self.old_tags_by_name, name)
-        if decision.ambiguous:
-            merged_entity = self._safe_merge_ambiguous_tag(name)
-            if merged_entity is None:
-                self.stats["ambiguous_entities_skipped"] += 1
-                log("WARNING", f"Tag '{name}' has ambiguous current matches that cannot be safely collapsed; relationship skipped.")
-                self.resolved_tags[key] = None
-                return None
-            match = type("_Match", (), {
-                "entity": merged_entity,
-                "kind": "safe-duplicate-merge",
-                "score": 1.0,
-                "second_score": 0.0,
-            })()
+
+        if primary_match is not None:
+            match = primary_match
+            self.stats["primary_tag_reuse"] += 1
         else:
-            match = decision.match
+            if primary_ambiguous:
+                merged_entity = self._safe_merge_ambiguous_tag(name)
+                if merged_entity is None:
+                    self.stats["ambiguous_entities_skipped"] += 1
+                    log(
+                        "WARNING",
+                        f"Tag '{name}' has multiple current primary-name matches that cannot "
+                        "be safely collapsed; relationship skipped.",
+                    )
+                    self.resolved_tags[key] = None
+                    return None
+                match = EntityMatch(
+                    merged_entity,
+                    "safe-duplicate-merge",
+                    1.0,
+                    0.0,
+                )
+            else:
+                decision = decide_entity_match(
+                    name,
+                    self.tags,
+                    alias_field="aliases",
+                    allow_fuzzy=True,
+                    threshold=TAG_THRESHOLD,
+                    margin=TAG_MARGIN,
+                )
+                if decision.ambiguous:
+                    merged_entity = self._safe_merge_ambiguous_tag(name)
+                    if merged_entity is None:
+                        self.stats["ambiguous_entities_skipped"] += 1
+                        log(
+                            "WARNING",
+                            f"Tag '{name}' has ambiguous alias/fuzzy current matches and no "
+                            "unique primary-name match; relationship skipped.",
+                        )
+                        self.resolved_tags[key] = None
+                        return None
+                    match = EntityMatch(
+                        merged_entity,
+                        "safe-duplicate-merge",
+                        1.0,
+                        0.0,
+                    )
+                else:
+                    match = decision.match
         if match and match.kind == "fuzzy":
             source_tokens = set(normalize_name(name).split())
             target_tokens = set(normalize_name(str(match.entity.get("name") or "")).split())
@@ -422,14 +489,32 @@ class MigrationEngine:
                     f"Tag fuzzy reuse: '{name}' -> '{match.entity.get('name')}' "
                     f"({match.score * 100:.1f}%, next {match.second_score * 100:.1f}%).",
                 )
-        if match and _same_endpoint_identity_conflict(
-            match.entity.get("stash_ids") or [], source.get("stash_ids") or []
-        ):
-            self.stats["entity_identity_conflicts"] += 1
-            log("WARNING", f"Tag '{name}' has a conflicting same-endpoint Stash ID; relationship skipped.")
-            self.resolved_tags[key] = None
-            return None
         if match:
+            identity_conflict = _same_endpoint_identity_conflict(
+                match.entity.get("stash_ids") or [], source.get("stash_ids") or []
+            )
+            if identity_conflict:
+                self.stats["entity_identity_conflicts"] += 1
+                if match.kind in {"primary-exact", "primary-normalized"}:
+                    self.stats["tag_identity_conflict_relationship_reuse"] += 1
+                    self.stats["reused_tags"] += 1
+                    tag_id = str(match.entity["id"])
+                    self.resolved_tags[key] = tag_id
+                    log(
+                        "WARNING",
+                        f"Tag '{name}' matches current primary Tag "
+                        f"'{match.entity.get('name')}'. The relationship will use that existing "
+                        "Tag, but conflicting same-endpoint Stash ID metadata will not be merged.",
+                    )
+                    return tag_id
+                log(
+                    "WARNING",
+                    f"Tag '{name}' has a conflicting same-endpoint Stash ID and only an "
+                    "alias/fuzzy match; relationship skipped.",
+                )
+                self.resolved_tags[key] = None
+                return None
+
             self.stats["reused_tags"] += 1
             entity = match.entity
             if not self.dry_run:
