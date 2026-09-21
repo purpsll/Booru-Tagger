@@ -83,7 +83,7 @@ def _metadata_signature(tag: Dict[str, Any]) -> Tuple[Any, ...]:
         str(tag.get("sort_name") or "").strip(),
         bool(tag.get("favorite")),
         bool(tag.get("ignore_auto_tag")),
-        bool(str(tag.get("image_path") or "").strip()),
+        (str(tag.get("image_path") or "").strip() if "default=true" not in str(tag.get("image_path") or "").casefold() else ""),
         _custom_fields_key(tag.get("custom_fields")),
         _clean_ids(tag.get("parents") or []),
         _clean_ids(tag.get("children") or []),
