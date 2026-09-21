@@ -707,6 +707,67 @@ class MigrationEngineTests(unittest.TestCase):
             self.assertTrue(any("parent_ids" in data for data in updates))
             self.assertEqual(engine.stats["tag_parent_links_added"], 1)
 
+    def test_conflicting_studio_alias_is_filtered_instead_of_failing_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            studio_path = pathlib.Path(tmp) / "studios" / "studio.json"
+            studio = json.loads(studio_path.read_text(encoding="utf-8"))
+            studio["aliases"] = ["ArtistStudio", "twistedscarlett60"]
+            studio_path.write_text(json.dumps(studio), encoding="utf-8")
+
+            stash = FakeStash()
+            stash._studios.append({
+                "id": "s-existing", "name": "twistedscarlett60", "aliases": [],
+                "urls": [], "rating100": None, "favorite": False, "details": None,
+                "ignore_auto_tag": False, "organized": False,
+                "parent_studio": None, "stash_ids": [], "tags": [],
+                "custom_fields": {},
+            })
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_studio("Artist Studio")
+
+            self.assertEqual(resolved, "s1")
+            update = next(
+                data for name, data in stash.calls
+                if name == "update_studio" and data.get("id") == "s1"
+            )
+            self.assertNotIn(
+                "twistedscarlett60",
+                [value.casefold() for value in update["aliases"]],
+            )
+            self.assertIn("artiststudio", [value.casefold() for value in update["aliases"]])
+            self.assertEqual(engine.stats["studio_alias_collision_skips"], 1)
+
+    def test_conflicting_performer_alias_is_filtered_instead_of_failing_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+
+            stash = FakeStash()
+            stash._performers.append({
+                "id": "p-existing", "name": "J. Doe", "disambiguation": "",
+                "alias_list": [], "urls": [], "gender": None, "birthdate": None,
+                "ethnicity": None, "country": None, "eye_color": None,
+                "height_cm": None, "measurements": None, "fake_tits": None,
+                "penis_length": None, "circumcised": None, "career_start": None,
+                "career_end": None, "tattoos": None, "piercings": None,
+                "favorite": False, "rating100": None, "details": None,
+                "death_date": None, "hair_color": None, "weight": None,
+                "ignore_auto_tag": False, "stash_ids": [], "tags": [],
+                "custom_fields": {},
+            })
+
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+            resolved = engine.resolve_performer("Jane Doe")
+
+            self.assertEqual(resolved, "p1")
+            update = next(
+                data for name, data in stash.calls
+                if name == "update_performer" and data.get("id") == "p1"
+            )
+            self.assertNotIn("j. doe", [value.casefold() for value in update["alias_list"]])
+            self.assertEqual(engine.stats["performer_alias_collision_skips"], 1)
+
     def test_safe_duplicate_performers_are_collapsed_during_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._build_export(tmp)
