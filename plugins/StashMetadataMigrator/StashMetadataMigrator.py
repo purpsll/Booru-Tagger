@@ -94,6 +94,11 @@ def _custom_field_delta(current: Any, old: Any) -> Dict[str, Any]:
     return {key: value for key, value in old_map.items() if key not in current_map}
 
 
+def _has_custom_image(image_path: Any) -> bool:
+    path = str(image_path or "").strip()
+    return bool(path and "default=true" not in path.casefold())
+
+
 def _same_endpoint_identity_conflict(
     current: Iterable[Mapping[str, Any]],
     old: Iterable[Mapping[str, Any]],
@@ -253,6 +258,8 @@ class MigrationEngine:
             "scene_markers_created": 0,
             "scene_markers_updated": 0,
             "image_o_increments": 0,
+            "entity_images_restored": 0,
+            "tag_parent_links_added": 0,
             "unresolved_galleries": 0,
             "ambiguous_galleries": 0,
             "entity_identity_conflicts": 0,
@@ -457,6 +464,9 @@ class MigrationEngine:
             value = str(source.get(src) or "").strip()
             if value:
                 data[dst] = value
+        if source.get("image"):
+            data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
         if isinstance(source.get("custom_fields"), dict) and source["custom_fields"]:
             data["custom_fields"] = source["custom_fields"]
         return data
@@ -486,6 +496,9 @@ class MigrationEngine:
             input_data["sort_name"] = sort_name
         if description:
             input_data["description"] = description
+        if not _has_custom_image(current.get("image_path")) and source.get("image"):
+            input_data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
         if delta:
             input_data["custom_fields"] = {"partial": delta}
         return self.stash.update_tag(input_data)
@@ -666,6 +679,12 @@ class MigrationEngine:
         if tag_ids:
             data["tag_ids"] = _unique_ids(tag_ids)
 
+        if source.get("image") and (not current or not _has_custom_image(current.get("image_path"))):
+            data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
+        if source.get("image") and (not current or not _has_custom_image(current.get("image_path"))):
+            data["image"] = source.get("image")
+            self.stats["entity_images_restored"] += 1
         custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
         if current:
             if custom_delta:
@@ -1199,6 +1218,33 @@ class MigrationEngine:
                     ],
                 })
 
+    def restore_tag_hierarchy(self) -> None:
+        tags_by_id = {str(tag.get("id") or ""): tag for tag in self.tags}
+        for source in self.old_tags:
+            name = str(source.get("name") or "").strip()
+            tag_id = self.resolve_tag(name)
+            if not tag_id or tag_id.startswith("DRYRUN:"):
+                continue
+            current = tags_by_id.get(tag_id) or {}
+            parent_ids = [
+                str(parent.get("id"))
+                for parent in (current.get("parents") or [])
+                if parent.get("id")
+            ]
+            before = set(parent_ids)
+            for parent_name in source.get("parents") or []:
+                parent_id = self.resolve_tag(str(parent_name))
+                if parent_id and not parent_id.startswith("DRYRUN:") and parent_id != tag_id:
+                    parent_ids.append(parent_id)
+            parent_ids = _unique_ids(parent_ids)
+            added = len(set(parent_ids) - before)
+            if added:
+                self.stats["tag_parent_links_added"] += added
+                if not self.dry_run:
+                    updated = self.stash.update_tag({"id": tag_id, "parent_ids": parent_ids})
+                    self._replace_entity(self.tags, updated)
+                    tags_by_id[tag_id] = updated
+
     def prepare_metadata_entities(self) -> None:
         for source in self.old_tags:
             self.resolve_tag(str(source.get("name") or ""))
@@ -1206,6 +1252,7 @@ class MigrationEngine:
             self.resolve_performer(str(source.get("name") or ""))
         for source in self.old_studios:
             self.resolve_studio(str(source.get("name") or ""))
+        self.restore_tag_hierarchy()
         for source in self.old_groups:
             self.resolve_group(str(source.get("name") or ""))
         for source in self.old_galleries:
