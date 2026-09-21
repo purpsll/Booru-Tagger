@@ -7,6 +7,8 @@ metadata. Media matching is fingerprint-first and must be unique.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import sys
 from pathlib import Path
@@ -99,6 +101,51 @@ def _custom_field_delta(current: Any, old: Any) -> Dict[str, Any]:
 def _has_custom_image(image_path: Any) -> bool:
     path = str(image_path or "").strip()
     return bool(path and "default=true" not in path.casefold())
+
+
+def _normalize_artwork_value(value: Any) -> Optional[str]:
+    """Return artwork in a GraphQL-safe form.
+
+    Stash JSON exports may store entity artwork as raw base64 without a data URI.
+    Stash GraphQL interprets a bare string as a URL, so raw base64 must be wrapped
+    as a data URI before being sent back.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    lowered = text.casefold()
+    if lowered.startswith("data:image/") or lowered.startswith("http://") or lowered.startswith("https://"):
+        return text
+
+    payload = "".join(text.split())
+    if not payload:
+        return None
+
+    # Decode only a short prefix for type detection; the full payload remains
+    # untouched so large artwork does not get copied/decoded unnecessarily.
+    prefix = payload[:96]
+    prefix += "=" * ((4 - len(prefix) % 4) % 4)
+    try:
+        raw = base64.b64decode(prefix, validate=False)
+    except (binascii.Error, ValueError):
+        return None
+
+    mime: Optional[str] = None
+    if raw.startswith(b"\xff\xd8\xff"):
+        mime = "image/jpeg"
+    elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    elif raw.startswith((b"GIF87a", b"GIF89a")):
+        mime = "image/gif"
+    elif raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
+        mime = "image/webp"
+    elif raw.lstrip().startswith(b"<svg"):
+        mime = "image/svg+xml"
+
+    if not mime:
+        return None
+    return f"data:{mime};base64,{payload}"
 
 
 def _same_endpoint_identity_conflict(
@@ -266,6 +313,7 @@ class MigrationEngine:
             "scene_markers_updated": 0,
             "image_o_increments": 0,
             "entity_images_restored": 0,
+            "entity_images_skipped_invalid": 0,
             "tag_parent_links_added": 0,
             "unresolved_galleries": 0,
             "ambiguous_galleries": 0,
@@ -757,8 +805,13 @@ class MigrationEngine:
             if value:
                 data[dst] = value
         if source.get("image"):
-            data["image"] = source.get("image")
-            self.stats["entity_images_restored"] += 1
+            artwork = _normalize_artwork_value(source.get("image"))
+            if artwork:
+                data["image"] = artwork
+                self.stats["entity_images_restored"] += 1
+            else:
+                self.stats["entity_images_skipped_invalid"] += 1
+                log("WARNING", f"Tag '{data['name']}' has unsupported/invalid artwork; artwork skipped.")
         if isinstance(source.get("custom_fields"), dict) and source["custom_fields"]:
             data["custom_fields"] = source["custom_fields"]
         return data
@@ -794,8 +847,16 @@ class MigrationEngine:
         if description:
             input_data["description"] = description
         if not _has_custom_image(current.get("image_path")) and source.get("image"):
-            input_data["image"] = source.get("image")
-            self.stats["entity_images_restored"] += 1
+            artwork = _normalize_artwork_value(source.get("image"))
+            if artwork:
+                input_data["image"] = artwork
+                self.stats["entity_images_restored"] += 1
+            else:
+                self.stats["entity_images_skipped_invalid"] += 1
+                log(
+                    "WARNING",
+                    f"Tag '{current.get('name') or source.get('name')}' has unsupported/invalid artwork; artwork skipped.",
+                )
         if delta:
             input_data["custom_fields"] = {"partial": delta}
         return self.stash.update_tag(input_data)
@@ -977,11 +1038,16 @@ class MigrationEngine:
             data["tag_ids"] = _unique_ids(tag_ids)
 
         if source.get("image") and (not current or not _has_custom_image(current.get("image_path"))):
-            data["image"] = source.get("image")
-            self.stats["entity_images_restored"] += 1
-        if source.get("image") and (not current or not _has_custom_image(current.get("image_path"))):
-            data["image"] = source.get("image")
-            self.stats["entity_images_restored"] += 1
+            artwork = _normalize_artwork_value(source.get("image"))
+            if artwork:
+                data["image"] = artwork
+                self.stats["entity_images_restored"] += 1
+            else:
+                self.stats["entity_images_skipped_invalid"] += 1
+                log(
+                    "WARNING",
+                    f"Performer '{current_name}' has unsupported/invalid artwork; artwork skipped.",
+                )
         custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
         if current:
             if custom_delta:
@@ -1129,6 +1195,18 @@ class MigrationEngine:
             parent_id = self.resolve_studio(parent_name)
             if parent_id:
                 data["parent_id"] = parent_id
+
+        if source.get("image") and (not current or not _has_custom_image(current.get("image_path"))):
+            artwork = _normalize_artwork_value(source.get("image"))
+            if artwork:
+                data["image"] = artwork
+                self.stats["entity_images_restored"] += 1
+            else:
+                self.stats["entity_images_skipped_invalid"] += 1
+                log(
+                    "WARNING",
+                    f"Studio '{current_name}' has unsupported/invalid artwork; artwork skipped.",
+                )
 
         custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
         if current:
@@ -1432,9 +1510,21 @@ class MigrationEngine:
             if studio_id:
                 data["studio_id"] = studio_id
         if not current.get("front_image_path") and source.get("front_image"):
-            data["front_image"] = source.get("front_image")
+            artwork = _normalize_artwork_value(source.get("front_image"))
+            if artwork:
+                data["front_image"] = artwork
+                self.stats["entity_images_restored"] += 1
+            else:
+                self.stats["entity_images_skipped_invalid"] += 1
+                log("WARNING", f"Group '{name}' has unsupported/invalid front artwork; artwork skipped.")
         if not current.get("back_image_path") and source.get("back_image"):
-            data["back_image"] = source.get("back_image")
+            artwork = _normalize_artwork_value(source.get("back_image"))
+            if artwork:
+                data["back_image"] = artwork
+                self.stats["entity_images_restored"] += 1
+            else:
+                self.stats["entity_images_skipped_invalid"] += 1
+                log("WARNING", f"Group '{name}' has unsupported/invalid back artwork; artwork skipped.")
         custom_delta = _custom_field_delta(current.get("custom_fields"), source.get("custom_fields"))
         if current:
             if custom_delta:
@@ -2060,7 +2150,8 @@ class MigrationEngine:
             f"Galleries reused/created={self.stats['reused_galleries']}/{self.stats['created_galleries']}; "
             f"Groups reused/created={self.stats['reused_groups']}/{self.stats['created_groups']}; "
             f"Gallery chapters={self.stats['gallery_chapters_created']}; "
-            f"Scene markers created/updated={self.stats['scene_markers_created']}/{self.stats['scene_markers_updated']}.",
+            f"Scene markers created/updated={self.stats['scene_markers_created']}/{self.stats['scene_markers_updated']}; "
+            f"Entity artwork restored/skipped={self.stats['entity_images_restored']}/{self.stats['entity_images_skipped_invalid']}.",
         )
         if self.dry_run:
             log(
