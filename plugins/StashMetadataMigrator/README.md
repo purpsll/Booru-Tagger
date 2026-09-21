@@ -142,9 +142,13 @@ Examples:
 
 This keeps formatting differences from artificially lowering match confidence while preserving the existing identity-conflict and token-subset safety checks.
 
-### Unmatched media diagnostics
+### Exact media hash matching and diagnostics
 
-When a Scene/Image cannot be matched by strong fingerprint or exact path, the warning now shows the old exported file path and whether MD5/OShash values were present. This makes it possible to distinguish a genuinely missing file from a moved file whose export lacks a usable strong fingerprint without falling back to unsafe filename guessing.
+Media identity compares hashes only when the **same algorithm** matches exactly. Supported exact content hashes are MD5, OShash, SHA-1, SHA-256, and SHA-512 (including common punctuation/case variants such as `SHA-256`). Different algorithms are never compared to each other.
+
+Perceptual hashes such as pHash are deliberately excluded from identity matching because an exact or near perceptual hash is not a safe proof that two media records are the same file.
+
+When a Scene/Image still cannot be matched by an exact content hash or exact path, the warning shows the old exported file path plus the hash evidence that was actually present, including excluded pHash-only cases. This makes moved/missing media diagnosable without falling back to unsafe filename guessing.
 
 ### Duplicate-averse Tag creation
 
