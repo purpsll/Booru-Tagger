@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from migration_core import (
     build_current_media_indexes,
     build_old_file_index,
+    compact_name,
     decide_entity_match,
     EntityMatch,
     load_json_files,
