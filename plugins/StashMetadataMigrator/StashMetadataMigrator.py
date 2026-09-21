@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from migration_core import (
     build_current_media_indexes,
     build_old_file_index,
-    find_entity_match,
+    decide_entity_match,
     load_json_files,
     match_old_media,
     merge_stash_ids,
@@ -86,6 +86,23 @@ def _custom_field_delta(current: Any, old: Any) -> Dict[str, Any]:
     return {key: value for key, value in old_map.items() if key not in current_map}
 
 
+def _same_endpoint_identity_conflict(
+    current: Iterable[Mapping[str, Any]],
+    old: Iterable[Mapping[str, Any]],
+) -> bool:
+    current_map = {
+        str(item.get("endpoint") or "").casefold().strip(): str(item.get("stash_id") or "").strip()
+        for item in current or []
+        if str(item.get("endpoint") or "").strip() and str(item.get("stash_id") or "").strip()
+    }
+    for item in old or []:
+        endpoint = str(item.get("endpoint") or "").casefold().strip()
+        stash_id = str(item.get("stash_id") or "").strip()
+        if endpoint and stash_id and endpoint in current_map and current_map[endpoint] != stash_id:
+            return True
+    return False
+
+
 def _safe_stash_ids(
     current: Iterable[Mapping[str, Any]],
     old: Iterable[Mapping[str, Any]],
@@ -143,6 +160,16 @@ class MigrationEngine:
         self.old_performers_by_name = source_name_map(self.old_performers)
         self.old_studios_by_name = source_name_map(self.old_studios)
 
+        performer_name_counts: Dict[str, int] = {}
+        for performer in self.old_performers:
+            name_key = str(performer.get("name") or "").casefold().strip()
+            if name_key:
+                performer_name_counts[name_key] = performer_name_counts.get(name_key, 0) + 1
+        self.ambiguous_old_performer_names = {
+            key for key, count in performer_name_counts.items() if count > 1
+        }
+        self._warned_ambiguous_old_performers = set()
+
         self.tags = stash.tags()
         self.performers = stash.performers()
         self.studios = stash.studios()
@@ -185,6 +212,7 @@ class MigrationEngine:
             "fuzzy_performer_reuse": 0,
             "fuzzy_studio_reuse": 0,
             "entity_identity_conflicts": 0,
+            "ambiguous_entities_skipped": 0,
             "errors": 0,
         }
 
@@ -198,7 +226,7 @@ class MigrationEngine:
         if key in self.resolved_tags:
             return self.resolved_tags[key]
 
-        match = find_entity_match(
+        decision = decide_entity_match(
             name,
             self.tags,
             alias_field="aliases",
@@ -207,6 +235,19 @@ class MigrationEngine:
             margin=1.0,
         )
         source = self._source_entity(self.old_tags_by_name, name)
+        if decision.ambiguous:
+            self.stats["ambiguous_entities_skipped"] += 1
+            log("WARNING", f"Tag '{name}' has ambiguous current matches; relationship skipped.")
+            self.resolved_tags[key] = None
+            return None
+        match = decision.match
+        if match and _same_endpoint_identity_conflict(
+            match.entity.get("stash_ids") or [], source.get("stash_ids") or []
+        ):
+            self.stats["entity_identity_conflicts"] += 1
+            log("WARNING", f"Tag '{name}' has a conflicting same-endpoint Stash ID; relationship skipped.")
+            self.resolved_tags[key] = None
+            return None
         if match:
             self.stats["reused_tags"] += 1
             entity = match.entity
@@ -281,7 +322,19 @@ class MigrationEngine:
         if key in self.resolved_performers:
             return self.resolved_performers[key]
 
-        match = find_entity_match(
+        if str(name or "").casefold().strip() in self.ambiguous_old_performer_names:
+            if key not in self._warned_ambiguous_old_performers:
+                log(
+                    "WARNING",
+                    f"Old export contains multiple Performers named '{name}' with different identities; "
+                    "name-only media relationship cannot be resolved safely and will be skipped.",
+                )
+                self._warned_ambiguous_old_performers.add(key)
+            self.stats["ambiguous_entities_skipped"] += 1
+            self.resolved_performers[key] = None
+            return None
+
+        decision = decide_entity_match(
             name,
             self.performers,
             alias_field="alias_list",
@@ -290,7 +343,34 @@ class MigrationEngine:
             margin=PERFORMER_MARGIN,
         )
         source = self._source_entity(self.old_performers_by_name, name)
+        if decision.ambiguous:
+            self.stats["ambiguous_entities_skipped"] += 1
+            log("WARNING", f"Performer '{name}' has ambiguous current matches; relationship skipped.")
+            self.resolved_performers[key] = None
+            return None
+        match = decision.match
         if match:
+            current_disambiguation = str(match.entity.get("disambiguation") or "").casefold().strip()
+            source_disambiguation = str(source.get("disambiguation") or "").casefold().strip()
+            identity_conflict = _same_endpoint_identity_conflict(
+                match.entity.get("stash_ids") or [], source.get("stash_ids") or []
+            )
+            if (
+                identity_conflict
+                or (
+                    current_disambiguation
+                    and source_disambiguation
+                    and current_disambiguation != source_disambiguation
+                )
+            ):
+                self.stats["entity_identity_conflicts"] += 1
+                log(
+                    "WARNING",
+                    f"Performer '{name}' matched by name but identity metadata conflicts; "
+                    "relationship skipped instead of merging or creating a duplicate.",
+                )
+                self.resolved_performers[key] = None
+                return None
             self.stats["reused_performers"] += 1
             if match.kind == "fuzzy":
                 self.stats["fuzzy_performer_reuse"] += 1
@@ -430,7 +510,7 @@ class MigrationEngine:
 
         self._studio_resolution_stack.add(key)
         try:
-            match = find_entity_match(
+            decision = decide_entity_match(
                 name,
                 self.studios,
                 alias_field="aliases",
@@ -439,6 +519,23 @@ class MigrationEngine:
                 margin=STUDIO_MARGIN,
             )
             source = self._source_entity(self.old_studios_by_name, name)
+            if decision.ambiguous:
+                self.stats["ambiguous_entities_skipped"] += 1
+                log("WARNING", f"Studio '{name}' has ambiguous current matches; relationship skipped.")
+                self.resolved_studios[key] = None
+                return None
+            match = decision.match
+            if match and _same_endpoint_identity_conflict(
+                match.entity.get("stash_ids") or [], source.get("stash_ids") or []
+            ):
+                self.stats["entity_identity_conflicts"] += 1
+                log(
+                    "WARNING",
+                    f"Studio '{name}' matched by name but has a conflicting same-endpoint "
+                    "Stash ID; relationship skipped instead of merging or duplicating it.",
+                )
+                self.resolved_studios[key] = None
+                return None
             if match:
                 self.stats["reused_studios"] += 1
                 if match.kind == "fuzzy":
