@@ -398,6 +398,30 @@ class Stash:
             page += 1
         return out
 
+    def update_tag_aliases(
+        self,
+        tag_id: str,
+        aliases: List[str],
+    ) -> Dict[str, Any]:
+        """Replace one tag's aliases, used to clear in-group collisions before tagsMerge."""
+        q = """
+        mutation UpdateTagAliases($input: TagUpdateInput!) {
+          tagUpdate(input: $input) { id name aliases }
+        }
+        """
+        result = self.gql(
+            q,
+            {
+                "input": {
+                    "id": str(tag_id),
+                    "aliases": [str(alias) for alias in aliases if str(alias).strip()],
+                }
+            },
+        ).get("tagUpdate")
+        if not result:
+            raise RuntimeError("Stash returned no tag from tagUpdate")
+        return result
+
     def merge_tags(
         self,
         source_ids: List[str],
