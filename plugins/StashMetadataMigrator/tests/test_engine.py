@@ -768,6 +768,38 @@ class MigrationEngineTests(unittest.TestCase):
             self.assertNotIn("j. doe", [value.casefold() for value in update["alias_list"]])
             self.assertEqual(engine.stats["performer_alias_collision_skips"], 1)
 
+    def test_studio_update_retries_without_aliases_on_duplicate_name_error(self):
+        class RejectingStudioAliasesStash(FakeStash):
+            def __init__(self):
+                super().__init__()
+                self.rejected_once = False
+
+            def update_studio(self, data):
+                if data.get("aliases") and not self.rejected_once:
+                    self.rejected_once = True
+                    self.calls.append(("update_studio_rejected", dict(data)))
+                    raise RuntimeError(
+                        "Stash GraphQL error: [{'message': "
+                        "\"studio with name 'twistedscarlett60' already exists\"}]"
+                    )
+                return super().update_studio(data)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build_export(tmp)
+            stash = RejectingStudioAliasesStash()
+            engine = MigrationEngine(stash, pathlib.Path(tmp), dry_run=False)
+
+            resolved = engine.resolve_studio("Artist Studio")
+
+            self.assertEqual(resolved, "s1")
+            self.assertTrue(stash.rejected_once)
+            successful = [
+                data for name, data in stash.calls
+                if name == "update_studio" and data.get("id") == "s1"
+            ]
+            self.assertTrue(successful)
+            self.assertNotIn("aliases", successful[-1])
+
     def test_safe_duplicate_performers_are_collapsed_during_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._build_export(tmp)
