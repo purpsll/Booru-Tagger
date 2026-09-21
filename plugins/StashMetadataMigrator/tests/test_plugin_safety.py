@@ -32,9 +32,21 @@ class PluginSafetyTests(unittest.TestCase):
             "2. Restore Metadata to Existing Media",
         ])
 
-    def test_manifest_version_is_1_0_0(self):
+    def test_manifest_version_is_1_1_0(self):
         text = MANIFEST.read_text(encoding="utf-8")
-        self.assertRegex(text, r"(?m)^version:\s*1\.0\.0$")
+        self.assertRegex(text, r"(?m)^version:\s*1\.1\.0$")
+
+    def test_restore_has_automatic_database_backup(self):
+        text = (MAIN.read_text(encoding="utf-8") + "\n" + CLIENT.read_text(encoding="utf-8"))
+        self.assertIn("backupDatabase(input:", text)
+        self.assertIn("backup_database()", text)
+
+    def test_metadata_objects_may_be_created_but_media_may_not(self):
+        text = CLIENT.read_text(encoding="utf-8")
+        self.assertIn("galleryCreate(input:", text)
+        self.assertIn("groupCreate(input:", text)
+        self.assertNotIn("sceneCreate(input:", text)
+        self.assertNotIn("imageCreate(input:", text)
 
     def test_source_path_is_user_configurable(self):
         text = MANIFEST.read_text(encoding="utf-8")
