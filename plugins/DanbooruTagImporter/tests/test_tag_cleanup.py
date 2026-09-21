@@ -91,6 +91,33 @@ class TagCleanupTests(unittest.TestCase):
         self.assertEqual(len(plan.safe_merges), 1)
         self.assertEqual(plan.safe_merges[0].destination_id, "2")
 
+    def test_custom_image_tag_is_preserved_as_destination(self):
+        plan = build_tag_cleanup_plan([
+            make_tag(
+                1,
+                "tag_name",
+                image_count=50,
+                image_path="/tag/1/image?t=1&default=true",
+            ),
+            make_tag(
+                2,
+                "Tag Name",
+                image_count=1,
+                image_path="/tag/2/image?t=2",
+            ),
+        ])
+        self.assertEqual(len(plan.safe_merges), 1)
+        self.assertEqual(plan.safe_merges[0].destination_id, "2")
+
+    def test_two_custom_images_require_review(self):
+        plan = build_tag_cleanup_plan([
+            make_tag(1, "tag_name", image_path="/tag/1/image?t=1"),
+            make_tag(2, "Tag Name", image_path="/tag/2/image?t=2"),
+        ])
+        self.assertEqual(plan.safe_merges, ())
+        self.assertEqual(len(plan.review), 1)
+        self.assertIn("metadata-conflict", plan.review[0].kind)
+
     def test_usage_count_breaks_plain_duplicate_ties(self):
         plan = build_tag_cleanup_plan([
             make_tag(1, "Big Breasts", image_count=2),
