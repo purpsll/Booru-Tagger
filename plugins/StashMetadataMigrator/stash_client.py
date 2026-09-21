@@ -87,7 +87,7 @@ class Stash:
             count
             scenes {
               id title code details director urls date rating100 organized
-              resume_time play_duration
+              resume_time play_duration play_history o_history
               studio { id name aliases }
               tags { id name aliases }
               performers { id name alias_list }
@@ -292,6 +292,26 @@ class Stash:
         if not result:
             raise RuntimeError("sceneUpdate returned no Scene")
         return result
+
+    def add_scene_plays(self, scene_id: str, times: List[str]) -> None:
+        if not times:
+            return
+        query = """
+        mutation MigratorAddScenePlays($id: ID!, $times: [Timestamp!]) {
+          sceneAddPlay(id: $id, times: $times) { count }
+        }
+        """
+        self.gql(query, {"id": str(scene_id), "times": times})
+
+    def add_scene_os(self, scene_id: str, times: List[str]) -> None:
+        if not times:
+            return
+        query = """
+        mutation MigratorAddSceneOs($id: ID!, $times: [Timestamp!]) {
+          sceneAddO(id: $id, times: $times) { count }
+        }
+        """
+        self.gql(query, {"id": str(scene_id), "times": times})
 
     def update_image(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         query = """
