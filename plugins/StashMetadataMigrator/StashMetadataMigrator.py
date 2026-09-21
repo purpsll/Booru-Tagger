@@ -1133,7 +1133,24 @@ class MigrationEngine:
     def _merge_performer_metadata(self, current: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
         data = self._performer_common_input(source, current=current)
         data["id"] = str(current["id"])
-        return self.stash.update_performer(data)
+        try:
+            return self.stash.update_performer(data)
+        except RuntimeError as exc:
+            message = str(exc).casefold()
+            if (
+                data.get("alias_list")
+                and "performer with name" in message
+                and "already exists" in message
+            ):
+                skipped = list(data.pop("alias_list"))
+                self.stats["performer_alias_collision_skips"] += len(skipped)
+                log(
+                    "WARNING",
+                    f"Stash rejected Performer aliases for '{current.get('name')}' as "
+                    "duplicate names; retrying the metadata update without alias changes.",
+                )
+                return self.stash.update_performer(data)
+            raise
 
     def resolve_studio(self, name: str) -> Optional[str]:
         key = normalize_name(name)
@@ -1302,7 +1319,24 @@ class MigrationEngine:
     def _merge_studio_metadata(self, current: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
         data = self._studio_common_input(source, current=current)
         data["id"] = str(current["id"])
-        return self.stash.update_studio(data)
+        try:
+            return self.stash.update_studio(data)
+        except RuntimeError as exc:
+            message = str(exc).casefold()
+            if (
+                data.get("aliases")
+                and "studio with name" in message
+                and "already exists" in message
+            ):
+                skipped = list(data.pop("aliases"))
+                self.stats["studio_alias_collision_skips"] += len(skipped)
+                log(
+                    "WARNING",
+                    f"Stash rejected Studio aliases for '{current.get('name')}' as "
+                    "duplicate names; retrying the metadata update without alias changes.",
+                )
+                return self.stash.update_studio(data)
+            raise
 
     @staticmethod
     def _group_alias_values(entity: Mapping[str, Any]) -> List[str]:
