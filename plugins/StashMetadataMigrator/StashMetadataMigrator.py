@@ -1945,8 +1945,11 @@ class MigrationEngine:
         )
         log(
             "INFO",
-            f"Entity/relationship summary: safe duplicate merges "
-            f"Tags={self.stats['merged_duplicate_tags']}, "
+            f"Entity/relationship summary: Tags reused/created="
+            f"{self.stats['reused_tags']}/{self.stats['created_tags']} "
+            f"(external-ID reuse={self.stats['stash_id_tag_reuse']}, "
+            f"creation-guard skips={self.stats['tag_creation_guard_skips']}); "
+            f"safe duplicate merges Tags={self.stats['merged_duplicate_tags']}, "
             f"Performers={self.stats['merged_duplicate_performers']}, "
             f"Studios={self.stats['merged_duplicate_studios']}; "
             f"Galleries reused/created={self.stats['reused_galleries']}/{self.stats['created_galleries']}; "
