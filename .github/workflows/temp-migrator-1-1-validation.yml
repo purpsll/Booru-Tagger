@@ -1,0 +1,26 @@
+name: Temporary Migrator 1.1 Validation
+
+on:
+  push:
+    branches:
+      - feature/migrator-complete-relations
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Compile plugins
+        run: |
+          python -m py_compile plugins/StashMetadataMigrator/*.py
+          python -m py_compile plugins/DanbooruTagImporter/*.py
+      - name: Test Metadata Migrator
+        run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/StashMetadataMigrator/tests -v
+      - name: Test Booru Importer
+        run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
