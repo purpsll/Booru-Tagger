@@ -261,6 +261,113 @@ class MigrationEngine:
     def _source_entity(self, mapping: Dict[str, Dict[str, Any]], name: str) -> Dict[str, Any]:
         return mapping.get(str(name or "").casefold(), {"name": name})
 
+    def _remove_merged_entities(
+        self,
+        collection: List[Dict[str, Any]],
+        source_ids: Iterable[str],
+    ) -> None:
+        remove = {str(value) for value in source_ids}
+        collection[:] = [
+            entity for entity in collection
+            if str(entity.get("id") or "") not in remove
+        ]
+
+    def _safe_merge_ambiguous_tag(self, name: str) -> Optional[Dict[str, Any]]:
+        merge = safe_formatting_merge(
+            name, self.tags, kind="tag", alias_field="aliases"
+        )
+        if not merge:
+            return None
+        by_id = {str(tag.get("id") or ""): tag for tag in self.tags}
+        destination = by_id.get(merge.destination_id)
+        if not destination:
+            return None
+        removals, conflicts = tag_alias_preflight(self.tags, merge)
+        if conflicts:
+            return None
+        if self.dry_run:
+            self.stats["merged_duplicate_tags"] += len(merge.source_ids)
+            return destination
+
+        for owner_id, remove_keys in removals.items():
+            owner = by_id.get(owner_id) or {}
+            aliases = [
+                str(alias)
+                for alias in (owner.get("aliases") or [])
+                if str(alias or "").casefold().strip() not in set(remove_keys)
+            ]
+            updated = self.stash.update_tag_aliases(owner_id, aliases)
+            owner["aliases"] = updated.get("aliases") or aliases
+
+        merged = self.stash.merge_tags(list(merge.source_ids), merge.destination_id)
+        destination.update(merged)
+        self._remove_merged_entities(self.tags, merge.source_ids)
+        self.stats["merged_duplicate_tags"] += len(merge.source_ids)
+        log(
+            "INFO",
+            f"Merged {len(merge.source_ids)} safe duplicate Tag(s) into "
+            f"'{merge.destination_name}' while resolving old metadata.",
+        )
+        return destination
+
+    def _safe_merge_ambiguous_performer(self, name: str) -> Optional[Dict[str, Any]]:
+        merge = safe_formatting_merge(
+            name, self.performers, kind="performer", alias_field="alias_list"
+        )
+        if not merge:
+            return None
+        by_id = {str(entity.get("id") or ""): entity for entity in self.performers}
+        destination = by_id.get(merge.destination_id)
+        if not destination:
+            return None
+        if self.dry_run:
+            self.stats["merged_duplicate_performers"] += len(merge.source_ids)
+            return destination
+        values = merged_entity_values(
+            self.performers, merge, alias_field="alias_list"
+        )
+        merged = self.stash.merge_performers(
+            list(merge.source_ids), merge.destination_id, values
+        )
+        self._remove_merged_entities(self.performers, merge.source_ids)
+        self._replace_entity(self.performers, merged)
+        self.stats["merged_duplicate_performers"] += len(merge.source_ids)
+        log(
+            "INFO",
+            f"Merged {len(merge.source_ids)} safe duplicate Performer(s) into "
+            f"'{merge.destination_name}' while resolving old metadata.",
+        )
+        return merged
+
+    def _safe_merge_ambiguous_studio(self, name: str) -> Optional[Dict[str, Any]]:
+        merge = safe_formatting_merge(
+            name, self.studios, kind="studio", alias_field="aliases"
+        )
+        if not merge:
+            return None
+        by_id = {str(entity.get("id") or ""): entity for entity in self.studios}
+        destination = by_id.get(merge.destination_id)
+        if not destination:
+            return None
+        if self.dry_run:
+            self.stats["merged_duplicate_studios"] += len(merge.source_ids)
+            return destination
+        values = merged_entity_values(
+            self.studios, merge, alias_field="aliases"
+        )
+        merged = self.stash.merge_studios(
+            list(merge.source_ids), merge.destination_id, values
+        )
+        self._remove_merged_entities(self.studios, merge.source_ids)
+        self._replace_entity(self.studios, merged)
+        self.stats["merged_duplicate_studios"] += len(merge.source_ids)
+        log(
+            "INFO",
+            f"Merged {len(merge.source_ids)} safe duplicate Studio(s) into "
+            f"'{merge.destination_name}' while resolving old metadata.",
+        )
+        return merged
+
     def resolve_tag(self, name: str) -> Optional[str]:
         key = normalize_name(name)
         if not key:
@@ -272,17 +379,40 @@ class MigrationEngine:
             name,
             self.tags,
             alias_field="aliases",
-            allow_fuzzy=False,
-            threshold=1.0,
-            margin=1.0,
+            allow_fuzzy=True,
+            threshold=TAG_THRESHOLD,
+            margin=TAG_MARGIN,
         )
         source = self._source_entity(self.old_tags_by_name, name)
         if decision.ambiguous:
-            self.stats["ambiguous_entities_skipped"] += 1
-            log("WARNING", f"Tag '{name}' has ambiguous current matches; relationship skipped.")
-            self.resolved_tags[key] = None
-            return None
-        match = decision.match
+            merged_entity = self._safe_merge_ambiguous_tag(name)
+            if merged_entity is None:
+                self.stats["ambiguous_entities_skipped"] += 1
+                log("WARNING", f"Tag '{name}' has ambiguous current matches that cannot be safely collapsed; relationship skipped.")
+                self.resolved_tags[key] = None
+                return None
+            match = type("_Match", (), {
+                "entity": merged_entity,
+                "kind": "safe-duplicate-merge",
+                "score": 1.0,
+                "second_score": 0.0,
+            })()
+        else:
+            match = decision.match
+        if match and match.kind == "fuzzy":
+            source_tokens = set(normalize_name(name).split())
+            target_tokens = set(normalize_name(str(match.entity.get("name") or "")).split())
+            if source_tokens and target_tokens and (
+                source_tokens < target_tokens or target_tokens < source_tokens
+            ):
+                match = None
+            else:
+                self.stats["fuzzy_tag_reuse"] += 1
+                log(
+                    "INFO",
+                    f"Tag fuzzy reuse: '{name}' -> '{match.entity.get('name')}' "
+                    f"({match.score * 100:.1f}%, next {match.second_score * 100:.1f}%).",
+                )
         if match and _same_endpoint_identity_conflict(
             match.entity.get("stash_ids") or [], source.get("stash_ids") or []
         ):
@@ -387,11 +517,20 @@ class MigrationEngine:
         )
         source = self._source_entity(self.old_performers_by_name, name)
         if decision.ambiguous:
-            self.stats["ambiguous_entities_skipped"] += 1
-            log("WARNING", f"Performer '{name}' has ambiguous current matches; relationship skipped.")
-            self.resolved_performers[key] = None
-            return None
-        match = decision.match
+            merged_entity = self._safe_merge_ambiguous_performer(name)
+            if merged_entity is None:
+                self.stats["ambiguous_entities_skipped"] += 1
+                log("WARNING", f"Performer '{name}' has ambiguous current matches that cannot be safely collapsed; relationship skipped.")
+                self.resolved_performers[key] = None
+                return None
+            match = type("_Match", (), {
+                "entity": merged_entity,
+                "kind": "safe-duplicate-merge",
+                "score": 1.0,
+                "second_score": 0.0,
+            })()
+        else:
+            match = decision.match
         if match:
             current_disambiguation = str(match.entity.get("disambiguation") or "").casefold().strip()
             source_disambiguation = str(source.get("disambiguation") or "").casefold().strip()
@@ -564,11 +703,20 @@ class MigrationEngine:
             )
             source = self._source_entity(self.old_studios_by_name, name)
             if decision.ambiguous:
-                self.stats["ambiguous_entities_skipped"] += 1
-                log("WARNING", f"Studio '{name}' has ambiguous current matches; relationship skipped.")
-                self.resolved_studios[key] = None
-                return None
-            match = decision.match
+                merged_entity = self._safe_merge_ambiguous_studio(name)
+                if merged_entity is None:
+                    self.stats["ambiguous_entities_skipped"] += 1
+                    log("WARNING", f"Studio '{name}' has ambiguous current matches that cannot be safely collapsed; relationship skipped.")
+                    self.resolved_studios[key] = None
+                    return None
+                match = type("_Match", (), {
+                    "entity": merged_entity,
+                    "kind": "safe-duplicate-merge",
+                    "score": 1.0,
+                    "second_score": 0.0,
+                })()
+            else:
+                match = decision.match
             if match and _same_endpoint_identity_conflict(
                 match.entity.get("stash_ids") or [], source.get("stash_ids") or []
             ):
