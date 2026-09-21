@@ -1,10 +1,10 @@
-# Booru Importer v3.26.23
+# Booru Importer v3.26.24
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
 ## Release goals
 
-v3.26.23 adds conservative Stash tag cleanup tasks. The plugin can scan the full tag library, automatically merge only formatting-equivalent duplicates, and list fuzzy or metadata-conflicting candidates for manual review. Automatic cleanup never merges fuzzy names. v3.26.22 routes external SauceNAO results in the 85.0–92.9% band to Review when SauceNAO supplies a usable source URL.
+v3.26.24 extends the conservative cleanup system to Stash Performers and Studios. Formatting-equivalent duplicates can be merged safely, while fuzzy names, conflicting rich metadata, Studio hierarchy conflicts, and disagreeing same-endpoint Stash IDs remain review-only. v3.26.23 added the equivalent Tag cleanup workflow.
 
 - Authenticated Stash installs now use the `SessionCookie` object supplied by Stash correctly, including custom cookie names.
 - Local pHash reuse no longer copies metadata from another Stash image. A pHash hit is used only to find a trusted source URL; the plugin re-fetches the current booru post metadata and applies that through the normal import path.
@@ -111,6 +111,23 @@ Fuzzy matches and metadata conflicts are never auto-merged.
 
 Lists only REVIEW candidates and makes no changes. Use this after the safe merge pass to inspect ambiguous names manually.
 
+
+### 9–11. Performer Cleanup
+
+- **Scan Similar Performers (No Changes)** reports SAFE formatting duplicates and REVIEW candidates.
+- **Merge Safe Duplicate Performers** uses Stash's native `performerMerge`. Source names become aliases, and URLs, tags, Stash IDs, plus attached Scenes/Images/Galleries are preserved.
+- **Show Similar Performer Review Candidates** is read-only.
+
+A Performer is never auto-merged on fuzzy similarity alone. Conflicting biographical/identity metadata, multiple custom images, or different Stash IDs from the same endpoint force REVIEW.
+
+### 12–14. Studio Cleanup
+
+- **Scan Similar Studios (No Changes)** reports SAFE formatting duplicates and REVIEW candidates.
+- **Merge Safe Duplicate Studios** preserves URLs/tags, moves attached Scenes/Images/Galleries/Groups to the surviving Studio, deletes only the emptied duplicate, then preserves source names as aliases and carries forward Stash IDs.
+- **Show Similar Studio Review Candidates** is read-only.
+
+Stash v0.31.1 does not expose a native Studio merge mutation, so the Studio cleanup uses a guarded staged merge. Conflicting Studio hierarchy, rich metadata, custom images, or different Stash IDs from the same endpoint force REVIEW instead of automatic changes.
+
 ## Persistent workflow states
 
 Exactly one of these status tags is maintained for a classified image:
@@ -152,7 +169,10 @@ State transitions remove the old plugin status marker without removing ordinary 
 - Tag cleanup fuzzy review threshold: 96%; fuzzy candidates are never auto-merged
 - Tag cleanup automatic merge: exact alphanumeric equivalence after formatting normalization only
 - Studio fuzzy alias merge: 96% with a 3-point winner margin
-- Performer fuzzy alias merge: 98% with a 3-point winner margin
+- Performer fuzzy alias reuse during metadata import: 98% with a 3-point winner margin
+- Performer cleanup fuzzy review threshold: 98%; fuzzy candidates are never auto-merged
+- Studio cleanup fuzzy review threshold: 96%; fuzzy candidates are never auto-merged
+- Performer/Studio cleanup automatic merge: exact alphanumeric equivalence after formatting normalization only
 
 ## Safe local pHash reuse
 
@@ -184,7 +204,7 @@ Rule34 also has a provider-specific API quirk: an HTTP 200 response with an empt
 
 The plugin preserves existing ordinary Stash metadata. It adds matched source tags when the source exposes authoritative tags and merges source performers, assigns a source artist Studio only when the target has no Studio, sets a source date only when the target has no date, and appends a canonical source URL if it is not already present. High-confidence external SauceNAO sources can also fill a blank Stash title and photographer/creator field from explicit SauceNAO metadata. Yande.re and Konachan matches are resolved to their post APIs for real source tags; sites without a reliable tag endpoint are metadata-only rather than having tags guessed from titles or descriptions.
 
-Normalized and fuzzy entity matching are conservative and require a clear winner. Existing user metadata is not removed by ordinary imports. The separate tag-cleanup merge task uses Stash's native tag merge and refuses automatic merges when rich tag metadata conflicts.
+Normalized and fuzzy entity matching are conservative and require a clear winner. Existing user metadata is not removed by ordinary imports. The separate cleanup tasks refuse automatic merges when identity or rich metadata conflicts. Performer cleanup uses Stash's native merge; Studio cleanup performs a guarded reassignment because Stash v0.31.1 has no native Studio merge mutation.
 
 ## Installation
 
@@ -209,6 +229,7 @@ For manual installation, the directory should contain at least:
 - `matching.py`
 - `entity_matching.py`
 - `tag_cleanup.py`
+- `entity_cleanup.py`
 
 ## Tests
 
@@ -218,7 +239,7 @@ From the plugin directory:
 python -m unittest discover -s tests -v
 ```
 
-The regression suite covers provider failure classification, Rule34 cooldown behavior, persistent workflow transitions, pHash selection, Stash authenticated session cookies, credential redaction/auth transport, optional-provider behavior, pHash metadata isolation, similar-tag cleanup classification, and the native Stash tag-merge GraphQL call.
+The regression suite covers provider failure classification, Rule34 cooldown behavior, persistent workflow transitions, pHash selection, Stash authenticated session cookies, credential redaction/auth transport, optional-provider behavior, pHash metadata isolation, Tag/Performer/Studio cleanup classification, native Performer/Tag merge calls, and the guarded Studio reassignment path.
 
 ## Publishing / maintenance
 
