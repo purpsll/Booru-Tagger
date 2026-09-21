@@ -319,6 +319,10 @@ def match_old_media(
         if not info:
             continue
         fingerprints = info.get("fingerprints") or {}
+        # Never let perceptual similarity override contradictory strong-hash
+        # evidence from the old export.
+        if any(str(fingerprints.get(fp_type) or "").strip() for fp_type in STRONG_FINGERPRINT_TYPES):
+            continue
         phash = str(fingerprints.get("phash") or "").casefold().strip()
         size = int(info.get("size") or 0)
         if not phash or size <= 0:
