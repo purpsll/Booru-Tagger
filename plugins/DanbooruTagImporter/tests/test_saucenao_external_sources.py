@@ -184,6 +184,62 @@ class SauceNaoSourceRestrictionTests(unittest.TestCase):
         self.assertEqual(resolved["_saucenao_score"], 95.0)
         resolver.assert_called_once_with("6906968", "", "")
 
+    def test_patreon_review_band_hit_never_appends_url_to_image(self):
+        class FakeStash:
+            def __init__(self):
+                self.updated = []
+            def image_bytes(self, image_id):
+                return b"image"
+            def update_image_tags(self, image_id, tag_ids, **kwargs):
+                self.updated.append((str(image_id), list(tag_ids), kwargs))
+            def create_tag(self, name):
+                return {"id": "marker", "name": name}
+
+        stash = FakeStash()
+        image = {
+            "id": "1911",
+            "tags": [{"id": "unresolved", "name": plugin.UNRESOLVED_MARKER_TAG}],
+            "performers": [],
+            "studio": None,
+            "date": "",
+            "urls": [],
+            "files": [
+                {"fingerprints": [{"type": "md5", "value": "a" * 32}]}
+            ],
+        }
+        patreon_url = "https://www.patreon.com/posts/example-123"
+
+        def sauce_miss(*args, **kwargs):
+            kwargs["diagnostics"].update({
+                "best_similarity": 90.0,
+                "best_supported_similarity": 0.0,
+                "best_supported_url": "",
+                "best_external_similarity": 90.0,
+                "best_external_url": patreon_url,
+            })
+            return None
+
+        with mock.patch.object(plugin, "ENABLE_DANBOORU_IQDB", False), \
+             mock.patch.object(plugin, "ENABLE_E621_IQDB", False), \
+             mock.patch.object(plugin, "saucenao_resolve", side_effect=sauce_miss):
+            result = plugin.process_image(
+                stash,
+                image,
+                {"saucenao_api_key": "key"},
+                {},
+                False,
+                {},
+                {},
+                {},
+                {},
+                plugin.PHashIndex(),
+                lookup_mode="deep",
+            )
+
+        self.assertEqual(result, "retry_later")
+        self.assertEqual(image["urls"], [])
+        self.assertEqual(stash.updated, [])
+
     def test_external_review_band_hit_remains_inconclusive_without_appending_source(self):
         self.assertTrue(
             plugin._saucenao_strong_unsupported_is_inconclusive(
