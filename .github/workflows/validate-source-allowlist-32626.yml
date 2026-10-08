@@ -1,0 +1,48 @@
+name: Validate metadata source allowlist 3.26.26
+
+on:
+  push:
+    branches:
+      - test/restrict-metadata-sources-32626
+    paths:
+      - '.github/workflows/validate-source-allowlist-32626.yml'
+      - 'README.md'
+      - 'plugins/DanbooruTagImporter/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compile source and check UI syntax
+        run: |
+          python -m py_compile plugins/DanbooruTagImporter/*.py
+          node --check plugins/DanbooruTagImporter/BooruImporterReview.js
+
+      - name: Run regression suite
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s plugins/DanbooruTagImporter/tests -v
+
+      - name: Validate source allowlist and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -qx 'VERSION = "3.26.26"' plugins/DanbooruTagImporter/constants.py
+          grep -qx 'version: 3.26.26' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
+          grep -qx 'url: https://github.com/purpsll/Booru-Tagger' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
+          grep -Fq '_METADATA_SOURCE_ALLOWLIST = frozenset({"danbooru", "gelbooru", "rule34", "e621"})' plugins/DanbooruTagImporter/DanbooruTagImporter.py
+          ! grep -Fq 'return "saucenao_external"' plugins/DanbooruTagImporter/DanbooruTagImporter.py
+          ! grep -Fq 'return "konachan"' plugins/DanbooruTagImporter/DanbooruTagImporter.py
+          ! grep -Fq 'return "yandere"' plugins/DanbooruTagImporter/DanbooruTagImporter.py
+          grep -Fq 'High-confidence Patreon hit is not a metadata source' <(sed 's/test_high_confidence_patreon_hit_is_not_a_metadata_source/High-confidence Patreon hit is not a metadata source/' plugins/DanbooruTagImporter/tests/test_saucenao_external_sources.py)
+          grep -Fq 'only Danbooru, Gelbooru, Rule34, or e621 are trusted metadata sources' README.md
+          git diff --check
+          chmod +x build_site.sh
+          ./build_site.sh
+          grep -q 'id: DanbooruTagImporter' _site/index.yml
+          grep -q 'version: 3.26.26-' _site/index.yml
+          test -f _site/DanbooruTagImporter.zip
+          unzip -p _site/DanbooruTagImporter.zip DanbooruTagImporter/DanbooruTagImporter.yml | grep -qx 'url: https://github.com/purpsll/Booru-Tagger'
