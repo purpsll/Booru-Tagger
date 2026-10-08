@@ -944,10 +944,10 @@ def moebooru_post_by_id(
 def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float, danbooru_login: str, danbooru_api_key: str, gelbooru_api_key: str, gelbooru_user_id: str, rule34_api_key: str, rule34_user_id: str, e621_username: str = '', e621_api_key: str = '', requests_per_30_seconds: float = 0.0, diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Search SauceNAO and resolve the strongest qualifying source.
 
-    Known booru-style sources are resolved to their current metadata APIs so real
-    source tags can be imported. Other high-confidence SauceNAO sources return only
-    explicit SauceNAO metadata such as source URL, site, title, creator, and date.
-    Remote source image files are never downloaded.
+    SauceNAO is used only to locate matches. Metadata is accepted exclusively from
+    Danbooru, Gelbooru, Rule34, or e621 after resolving the candidate through that
+    provider's metadata API. Other SauceNAO indexes never become metadata sources or
+    Review URLs. Remote source image files are never downloaded.
     """
     if not api_key or _saucenao_is_disabled():
         return None
@@ -1080,23 +1080,8 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
             if post:
                 post["_saucenao_score"]=sim; return "e621",post
 
-        kid=data.get("konachan_id")
-        if kid:
-            post=moebooru_post_by_id("https://konachan.com",str(kid),"Konachan")
-            if post:
-                post["_saucenao_score"]=sim
-                post["_source_artists"]=_saucenao_name_list(data.get("creator"))
-                post["_source_characters"]=_saucenao_name_list(data.get("characters"))
-                return "konachan",post
-
-        yid=data.get("yandere_id")
-        if yid:
-            post=moebooru_post_by_id("https://yande.re",str(yid),"Yande.re")
-            if post:
-                post["_saucenao_score"]=sim
-                post["_source_artists"]=_saucenao_name_list(data.get("creator"))
-                post["_source_characters"]=_saucenao_name_list(data.get("characters"))
-                return "yandere",post
+        # Ignore every other SauceNAO index for metadata. SauceNAO remains
+        # a search provider, but only the four supported boorus may supply data.
 
         urls=data.get("ext_urls") or []
         if isinstance(urls,str):
@@ -1123,29 +1108,8 @@ def saucenao_resolve(image_bytes: bytes, api_key: str, minimum_similarity: float
                 post=e621_post_by_id(m.group(1),e621_username,e621_api_key)
                 if post:
                     post["_saucenao_score"]=sim; return "e621",post
-            m=re.search(r'konachan\.com/post/show/(\d+)',u)
-            if m:
-                post=moebooru_post_by_id("https://konachan.com",m.group(1),"Konachan")
-                if post:
-                    post["_saucenao_score"]=sim
-                    post["_source_artists"]=_saucenao_name_list(data.get("creator"))
-                    post["_source_characters"]=_saucenao_name_list(data.get("characters"))
-                    return "konachan",post
-            m=re.search(r'yande\.re/post/show/(\d+)',u)
-            if m:
-                post=moebooru_post_by_id("https://yande.re",m.group(1),"Yande.re")
-                if post:
-                    post["_saucenao_score"]=sim
-                    post["_source_artists"]=_saucenao_name_list(data.get("creator"))
-                    post["_source_characters"]=_saucenao_name_list(data.get("characters"))
-                    return "yandere",post
-
-        header={}
-        for item in results:
-            if isinstance(item,dict) and item.get("data") is data:
-                header=item.get("header") or {}
-                break
-        return "saucenao_external", _saucenao_external_post(header,data,sim)
+        # Unsupported SauceNAO sources are search evidence only. Continue through
+        # lower-ranked results in case one resolves to a supported booru.
 
     return None
 
