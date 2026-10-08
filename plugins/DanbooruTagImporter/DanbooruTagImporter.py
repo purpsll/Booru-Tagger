@@ -5,7 +5,7 @@ Metadata only by design:
 - Reads MD5 fingerprints already stored by Stash.
 - FAST mode tries exact-MD5 metadata lookups first (Danbooru, Gelbooru, Rule34, e621), then local pHash reuse and stops.
 - DEEP mode adds Danbooru/e621 IQDB and SauceNAO fallbacks for unresolved images.
-- Imports only explicit provider/source metadata; it never invents tags from titles or descriptions.
+- Imports metadata only from Danbooru, Gelbooru, Rule34, or e621; SauceNAO is search-only and never makes other sites metadata sources.
 - Never requests Danbooru file_url, large_file_url, previews, samples, thumbnails,
   or other remote image bytes. The IQDB fallback sends the existing Stash image
   to Danbooru in-memory only; it never saves a duplicate image locally.
@@ -66,6 +66,8 @@ from constants import (
 from stash_client import Stash
 from tag_cleanup import TagCleanupCandidate, build_tag_cleanup_plan, native_merge_alias_preflight
 from entity_cleanup import EntityCleanupCandidate, build_entity_cleanup_plan, merged_entity_values
+
+_METADATA_SOURCE_ALLOWLIST = frozenset({"danbooru", "gelbooru", "rule34", "e621"})
 
 # Per-process provider state. SauceNAO publishes account-specific quota fields in
 # each JSON response, so its pacing is adaptive instead of assuming the free tier.
@@ -3624,6 +3626,14 @@ def process_image(
             "INFO",
             f"Image {iid}: RETRY LATER; no persistent No Match marker was written. "
             f"{_format_stage_decisions(decision_details)}",
+        )
+        return "retry_later"
+
+    if source not in _METADATA_SOURCE_ALLOWLIST:
+        log(
+            "WARNING",
+            f"Image {iid}: refusing metadata from unsupported source '{source}'; "
+            "only Danbooru, Gelbooru, Rule34, and e621 are accepted.",
         )
         return "retry_later"
 
