@@ -3115,35 +3115,10 @@ def process_image(
             e621_api_key=e621_api_key,
         )
         if not resolved:
-            if not saucenao_api_key:
-                raise RuntimeError(
-                    "The approved external Review candidate requires SauceNAO, but no API key is configured"
-                )
-            _, review_floor, _ = _saucenao_thresholds(settings)
-            review_diag: Dict[str, Any] = {}
-            resolved = saucenao_resolve(
-                stash.image_bytes(iid),
-                saucenao_api_key,
-                review_floor,
-                danbooru_login,
-                danbooru_api_key,
-                gelbooru_api_key,
-                gelbooru_user_id,
-                rule34_api_key,
-                rule34_user_id,
-                e621_username,
-                e621_api_key,
-                saucenao_requests_per_30_seconds,
-                diagnostics=review_diag,
+            raise RuntimeError(
+                "Only Danbooru, Gelbooru, Rule34, and e621 Review candidates "
+                "can provide metadata"
             )
-            if resolved:
-                resolved_url = source_post_url(resolved[0], resolved[1]) or ""
-                if _canonical_url_key(resolved_url) != _canonical_url_key(approved_source_url):
-                    raise RuntimeError(
-                        "The approved external Review candidate is no longer SauceNAO's current best qualifying source"
-                    )
-        if not resolved:
-            raise RuntimeError("The approved Review candidate could not be resolved from its source site")
         source, post = resolved
         match_method = "manual_review"
         decision_details.append(f"Review candidate: manually approved {approved_source_url}")
@@ -3450,9 +3425,8 @@ def process_image(
                 saucenao_diag.get("best_external_url") or ""
             ).strip()
 
-            # Pick the strongest review-band candidate with an inspectable source URL,
-            # regardless of whether it came from one of the four directly supported
-            # boorus or another SauceNAO index.
+            # Only supported booru candidates can enter Review. Unsupported
+            # SauceNAO sources remain search evidence and are never appended as URLs.
             review_options: List[Tuple[float, str, str]] = []
             if (
                 saucenao_review_min
@@ -3463,16 +3437,6 @@ def process_image(
                 review_options.append(
                     (best_supported_similarity, best_supported_url, "supported")
                 )
-            if (
-                saucenao_review_min
-                <= best_external_similarity
-                < saucenao_auto_accept
-                and best_external_url
-            ):
-                review_options.append(
-                    (best_external_similarity, best_external_url, "external")
-                )
-
             if (
                 post is None
                 and saucenao_outcome.status == LookupStatus.MISS
@@ -3485,8 +3449,6 @@ def process_image(
                 outcomes.append(saucenao_outcome)
                 _metric(metrics, "saucenao_review_candidates")
                 _metric(metrics, "saucenao_review_band_matches")
-                if review_kind == "external":
-                    _metric(metrics, "saucenao_unsupported_results")
                 decision_details.append(
                     f"SauceNAO: {review_kind} review candidate "
                     f"{review_candidate_score:.1f}% not auto-accepted "
@@ -4116,7 +4078,7 @@ def _is_supported_booru_url(url: str) -> bool:
 
 
 def _is_review_candidate_url(url: str) -> bool:
-    """Accept plugin-created external Review URLs plus legacy supported booru URLs."""
+    """Recognize supported Review URLs plus legacy external URLs for rejection."""
     text = str(url or "").strip()
     if not text:
         return False
@@ -4178,6 +4140,12 @@ def review_candidate_action(
     expected_candidate_url = review_urls[-1]
     if candidate_url.casefold() != expected_candidate_url.casefold():
         raise RuntimeError("The proposed Review candidate URL is no longer the active candidate for this image")
+
+    if action == "yes" and not _is_supported_booru_url(candidate_source_url):
+        raise RuntimeError(
+            "Only Danbooru, Gelbooru, Rule34, and e621 can provide metadata. "
+            "This legacy external Review candidate can only be rejected."
+        )
 
     configure_network(settings, reset=True)
     tag_cache = stash.all_tags()
