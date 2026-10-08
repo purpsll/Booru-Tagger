@@ -1,6 +1,6 @@
 # Booru Importer
 
-**Booru Importer is a Stash plugin that finds matching posts on Danbooru, Gelbooru, Rule34, e621, and other high-confidence SauceNAO sources, then imports useful metadata into images already in your Stash library.**
+**Booru Importer is a Stash plugin that finds image matches with Danbooru, Gelbooru, Rule34, e621, and SauceNAO, then imports metadata only from Danbooru, Gelbooru, Rule34, or e621 into images already in your Stash library.**
 
 It can add:
 
@@ -72,7 +72,7 @@ SauceNAO results use the same one-decimal confidence value shown in the plugin l
 - **85.0–92.9% → Review**
 - **below 85.0% → not accepted as a SauceNAO match**
 
-A high-confidence SauceNAO result is no longer treated as **No Match** merely because it comes from a site outside the original four boorus. The plugin identifies the matched site from SauceNAO's index/source data and imports only metadata that can be verified. Yande.re and Konachan matches are resolved through their post APIs so their real source tags can also be imported. Other sites may be metadata-only when no reliable tag API is available. Any SauceNAO result in the **85.0–92.9% Review band** with a usable source URL now becomes `Multi-Booru Review`, including external sites. If SauceNAO has no inspectable source URL, the image remains Unresolved for a later retry.
+SauceNAO is still used as a reverse-image-search provider, including across its broader index set, but **only Danbooru, Gelbooru, Rule34, and e621 are trusted metadata sources**. A Patreon, Twitter/X, Pixiv, Konachan, Yande.re, or other external SauceNAO hit never supplies tags, Studio/artist data, Performers/characters, dates, titles, creators, or a new Review source URL. If SauceNAO finds a strong unsupported external result but no supported booru post, the result remains search evidence only and the image stays pending rather than importing outside metadata.
 
 When an image is marked **`Multi-Booru Review`**, open that image's normal Stash image page.
 
@@ -87,7 +87,7 @@ Booru Importer displays:
 
 Choosing **Yes** confirms that the proposed source is correct.
 
-For Danbooru, Gelbooru, Rule34, and e621, Booru Importer resolves that exact post directly. For an external SauceNAO candidate, it re-runs SauceNAO at the Review threshold and verifies that the same source URL is still the strongest qualifying result before importing its verified metadata. The normal metadata importer then applies:
+Review candidates are created only when SauceNAO resolves the match to Danbooru, Gelbooru, Rule34, or e621. Booru Importer then resolves that exact supported post directly before importing metadata. Legacy external Review links created by older versions can still be rejected with **No**, but **Yes** will refuse to import metadata from them. The normal metadata importer then applies:
 
 - source tags
 - Studio/artist handling
