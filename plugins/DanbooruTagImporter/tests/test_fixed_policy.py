@@ -32,6 +32,13 @@ class FixedPolicyTests(unittest.TestCase):
         keys = set(re.findall(r'settings\.get\("([a-z0-9_]+)"\)', text))
         self.assertEqual(keys, EXPECTED_USER_SETTINGS)
 
+    def test_manifest_links_to_public_github_repository(self):
+        text = YAML_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            "url: https://github.com/purpsll/Booru-Tagger",
+            text,
+        )
+
     def test_legacy_tuning_keys_are_not_in_plugin_ui(self):
         text = YAML_PATH.read_text(encoding="utf-8")
         for old_key in (
