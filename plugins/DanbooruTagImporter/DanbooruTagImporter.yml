@@ -1,9 +1,10 @@
 name: Booru Importer
-description: Two-step image metadata importer for Danbooru, Gelbooru, Rule34, e621, and high-confidence SauceNAO sources, with conservative Stash tag, Performer, and Studio deduplication tools.
-version: 3.26.25
+description: Two-step image metadata importer using Danbooru, Gelbooru, Rule34, and e621 as the only metadata sources. SauceNAO remains a reverse-search provider, with conservative Stash tag, Performer, and Studio deduplication tools.
+version: 3.26.26
+url: https://github.com/purpsll/Booru-Tagger
 # Update compatibility: keep the DanbooruTagImporter manifest filename/package ID stable so source-installed copies update in place through Stash.
 # e621 IQDB policy: transient failures are image-local; every new image remains eligible. Authenticated file uploads are paced at >=3s, anonymous uploads at >=65s, with adaptive post-429 backoff.
-# SauceNAO review policy: >=93.0% auto-import; 85.0-92.9% candidates with a usable source URL enter Review, including external SauceNAO sources. Review-band hits without a usable URL remain pending. Similarity is normalized to one decimal before threshold comparison so any score displayed as 93.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page.
+# SauceNAO review policy: >=93.0% auto-import; 85.0-92.9% candidates enter Review only when SauceNAO resolves them to Danbooru, Gelbooru, Rule34, or e621. Unsupported external SauceNAO sources never supply metadata or append Review URLs. Similarity is normalized to one decimal before threshold comparison so any score displayed as 93.0% is treated as HIGH and auto-imported. Review images expose Yes/No controls on the individual image page.
 # Yes resolves the exact proposed source and imports through the normal metadata path; No removes that candidate URL and writes Multi-Booru No Match.
 # Artist policy: first usable artist becomes Studio; additional artists become tags; conditional_dnp and third-party_edit are ignored as artist metadata.
 exec:
@@ -86,7 +87,7 @@ tasks:
       force_recheck: false
 
   - name: 3. Deep Match All Unresolved Images
-    description: Runs the slower reverse-image-search pass only on images queued as Unresolved. High-confidence matches become Imported; SauceNAO results from 85.0-92.9% with a usable source URL become Review, including external sources; authoritative misses become No Match. Review-band hits without a usable URL and temporary provider failures stay Unresolved for a later retry.
+    description: Runs the slower reverse-image-search pass only on images queued as Unresolved. High-confidence matches become Imported; SauceNAO results from 85.0-92.9% become Review only when they resolve to Danbooru, Gelbooru, Rule34, or e621. Unsupported external sources never supply metadata or append Review URLs. Authoritative misses become No Match; inconclusive visual hits and temporary provider failures stay Unresolved for a later retry.
     defaultArgs:
       mode: import_all
       lookup_mode: deep
