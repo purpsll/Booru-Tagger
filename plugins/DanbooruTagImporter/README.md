@@ -1,4 +1,4 @@
-# Booru Importer v3.26.25\n\n**v3.26.25 fixes Stash native tag-merge alias collisions.** Before calling `tagsMerge`, Booru Importer now temporarily removes source-name aliases that are already owned inside the same safe merge group; Stash immediately recreates those names as aliases on the survivor. If an unrelated tag owns the alias, the group is left for manual review instead of failing or mutating the unrelated tag.
+# Booru Importer v3.26.26\n\n**v3.26.26 restricts metadata imports to Danbooru, Gelbooru, Rule34, and e621 while keeping SauceNAO enabled for reverse search.** Unsupported external SauceNAO sites are search evidence only and are never appended as new Review source URLs or used for metadata.\n\n**v3.26.25 fixes Stash native tag-merge alias collisions.** Before calling `tagsMerge`, Booru Importer now temporarily removes source-name aliases that are already owned inside the same safe merge group; Stash immediately recreates those names as aliases on the survivor. If an unrelated tag owns the alias, the group is left for manual review instead of failing or mutating the unrelated tag.
 
 A dependency-free Stash image-metadata plugin for Danbooru, Gelbooru, Rule34, and e621. It enriches images already in Stash; it never downloads or replaces the source image file.
 
@@ -69,15 +69,15 @@ Visual search keeps Danbooru IQDB first. If Danbooru IQDB misses, e621 IQDB and 
 Results:
 
 - accepted match -> `Multi-Booru Imported`
-- SauceNAO candidate at 85.0–92.9% with a usable source URL -> `Multi-Booru Review`, including external SauceNAO sources
+- SauceNAO candidate at 85.0–92.9% -> `Multi-Booru Review` only when it resolves to Danbooru, Gelbooru, Rule34, or e621
 - authoritative miss across all active stages -> `Multi-Booru No Match`
 - temporary/provider failure -> current state is retained for a later retry
 
 ### Review candidates on an individual image
 
-When an image is tagged `Multi-Booru Review`, the individual Stash image page displays the proposed source URL—supported booru or external SauceNAO—and two explicit decisions. It also displays the exact persisted SauceNAO similarity percentage that caused the Review state.
+When an image is tagged `Multi-Booru Review`, the individual Stash image page displays the proposed supported booru URL and two explicit decisions. It also displays the exact persisted SauceNAO similarity percentage that caused the Review state. New Review candidates can come only from Danbooru, Gelbooru, Rule34, or e621.
 
-- **Yes — import this source:** directly resolves Danbooru/Gelbooru/Rule34/e621 candidates. For an external candidate, it re-runs SauceNAO at the Review floor and requires the same source URL to remain the strongest qualifying result before importing verified external metadata. Source tags are imported only when the matched source exposes authoritative tags; artist/Studio mapping, character/Performer mapping, source date, title/creator metadata, and canonical source URL follow the normal preservation rules. The image then becomes `Multi-Booru Imported`.
+- **Yes — import this source:** directly resolves the Danbooru/Gelbooru/Rule34/e621 candidate and imports it through the normal metadata path. Legacy external Review candidates from older releases are deliberately refused on **Yes**; they may still be removed with **No**.
 - **No — mark No Match:** removes the rejected candidate URL, replaces the Review workflow marker with `Multi-Booru No Match`, and does not import candidate metadata.
 
 The UI validates that the chosen URL is still the active Review candidate before either action is applied. The Stash v0.31.1 `ImageDetailPanel` callback compatibility fix from v3.26.11 remains in place. The confidence is stored only while the image is in Review using an internal URL fragment that the UI hides from the visible source link. On Yes, that internal marker is removed and only the canonical source URL remains. Review items created before v3.26.12 display **Not recorded** until rechecked.
@@ -202,7 +202,7 @@ Rule34 also has a provider-specific API quirk: an HTTP 200 response with an empt
 
 ## Metadata behavior
 
-The plugin preserves existing ordinary Stash metadata. It adds matched source tags when the source exposes authoritative tags and merges source performers, assigns a source artist Studio only when the target has no Studio, sets a source date only when the target has no date, and appends a canonical source URL if it is not already present. High-confidence external SauceNAO sources can also fill a blank Stash title and photographer/creator field from explicit SauceNAO metadata. Yande.re and Konachan matches are resolved to their post APIs for real source tags; sites without a reliable tag endpoint are metadata-only rather than having tags guessed from titles or descriptions.
+The plugin preserves existing ordinary Stash metadata. It adds metadata only from Danbooru, Gelbooru, Rule34, or e621: matched source tags and Performers are merged, a source artist Studio is assigned only when the target has no Studio, a source date is set only when the target has no date, and the canonical supported-booru source URL is appended if it is not already present. SauceNAO may identify other sites, but those external results never provide Stash metadata.
 
 Normalized and fuzzy entity matching are conservative and require a clear winner. Existing user metadata is not removed by ordinary imports. The separate cleanup tasks refuse automatic merges when identity or rich metadata conflicts. Performer cleanup uses Stash's native merge; Studio cleanup performs a guarded reassignment because Stash v0.31.1 has no native Studio merge mutation.
 
