@@ -220,60 +220,28 @@ class ReviewDecisionTests(unittest.TestCase):
             ["https://example.com/user-url"],
         )
 
-    def test_yes_external_candidate_rechecks_saucenao_and_imports_verified_metadata(self):
+    def test_yes_external_candidate_is_refused_as_metadata_source(self):
         image = review_image()
         image["urls"][-1] = EXTERNAL_REVIEW_URL
         stash = ReviewFakeStash(image)
-        external_post = {
-            "id": "123456789",
-            "_saucenao_score": 87.6,
-            "_saucenao_external": True,
-            "_source_site": "Twitter",
-            "_source_url": EXTERNAL_CANDIDATE_URL,
-            "_source_title": "Example source title",
-            "_source_artists": ["example_creator"],
-            "_source_characters": [],
-            "_source_date": "2025-01-02T03:04:05Z",
-        }
 
-        with mock.patch.object(
-            plugin,
-            "_resolve_supported_booru_url",
-            return_value=None,
-        ), mock.patch.object(
-            plugin,
-            "saucenao_resolve",
-            return_value=("saucenao_external", external_post),
-        ) as sauce, mock.patch.object(
-            plugin,
-            "ensure_studio",
-            return_value={"id": "studio-1", "name": "example_creator"},
-        ):
-            result = plugin.review_candidate_action(
-                stash,
-                {"saucenao_api_key": "key"},
-                {
-                    "action": "yes",
-                    "image_id": "42",
-                    "candidate_url": EXTERNAL_REVIEW_URL,
-                },
-            )
+        with mock.patch.object(plugin, "saucenao_resolve") as sauce:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Only Danbooru, Gelbooru, Rule34, and e621 can provide metadata",
+            ):
+                plugin.review_candidate_action(
+                    stash,
+                    {"saucenao_api_key": "key"},
+                    {
+                        "action": "yes",
+                        "image_id": "42",
+                        "candidate_url": EXTERNAL_REVIEW_URL,
+                    },
+                )
 
-        self.assertEqual(result["status"], "imported")
-        self.assertEqual(result["candidate_url"], EXTERNAL_CANDIDATE_URL)
-        self.assertEqual(result["review_confidence"], 87.6)
-        sauce.assert_called_once()
-        update = stash.updated[-1]
-        self.assertIn("import-tag", update["tag_ids"])
-        self.assertNotIn("review-tag", update["tag_ids"])
-        self.assertEqual(update["studio_id"], "studio-1")
-        self.assertEqual(update["date"], "2025-01-02")
-        self.assertEqual(update["title"], "Example source title")
-        self.assertEqual(update["photographer"], "example_creator")
-        self.assertEqual(
-            update["urls"],
-            ["https://example.com/user-url", EXTERNAL_CANDIDATE_URL],
-        )
+        sauce.assert_not_called()
+        self.assertEqual(stash.updated, [])
 
     def test_decision_rejects_a_non_active_supported_url(self):
         image = review_image()
