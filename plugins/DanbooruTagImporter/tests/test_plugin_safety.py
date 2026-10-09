@@ -435,7 +435,7 @@ class PluginSafetyTests(unittest.TestCase):
         self.assertEqual(metrics.get("saucenao_queries"), 1)
         self.assertEqual(metrics.get("saucenao_review_candidates"), 1)
 
-    def test_external_saucenao_review_band_with_url_moves_to_review(self):
+    def test_external_saucenao_review_band_with_url_stays_pending(self):
         stash = ProcessFakeStash()
         settings = {"saucenao_api_key": "key"}
         metrics = {}
@@ -468,17 +468,15 @@ class PluginSafetyTests(unittest.TestCase):
                 plugin.PHashIndex(), lookup_mode="deep", metrics=metrics
             )
 
-        self.assertEqual(result, "review_candidate")
+        self.assertEqual(result, "retry_later")
         self.assertEqual(
             {tag["name"] for tag in image_obj["tags"]},
-            {plugin.REVIEW_MARKER_TAG},
+            {plugin.UNRESOLVED_MARKER_TAG},
         )
-        stored_review_url = image_obj["urls"][-1]
-        canonical_url, score = plugin._review_candidate_parts(stored_review_url)
-        self.assertEqual(canonical_url, external_url)
-        self.assertEqual(score, 87.6)
-        self.assertEqual(metrics.get("saucenao_review_candidates"), 1)
-        self.assertEqual(metrics.get("saucenao_review_band_matches"), 1)
+        self.assertEqual(image_obj["urls"], [])
+        self.assertEqual(stash.updated, [])
+        self.assertEqual(metrics.get("saucenao_review_candidates", 0), 0)
+        self.assertEqual(metrics.get("saucenao_review_band_matches", 0), 0)
 
     def test_external_review_band_without_url_stays_pending(self):
         stash = ProcessFakeStash()
