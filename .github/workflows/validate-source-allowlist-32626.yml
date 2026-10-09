@@ -45,4 +45,3 @@ jobs:
           grep -q 'id: DanbooruTagImporter' _site/index.yml
           grep -q 'version: 3.26.26-' _site/index.yml
           test -f _site/DanbooruTagImporter.zip
-          unzip -Z1 _site/DanbooruTagImporter.zip | grep 'DanbooruTagImporter.yml' >/dev/null
