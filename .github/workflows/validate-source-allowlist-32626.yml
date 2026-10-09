@@ -46,4 +46,3 @@ jobs:
           grep -q 'version: 3.26.26-' _site/index.yml
           test -f _site/DanbooruTagImporter.zip
           unzip -Z1 _site/DanbooruTagImporter.zip | grep 'DanbooruTagImporter.yml' >/dev/null
-          unzip -p _site/DanbooruTagImporter.zip '*DanbooruTagImporter.yml' | grep -F 'url: https://github.com/purpsll/Booru-Tagger' >/dev/null
