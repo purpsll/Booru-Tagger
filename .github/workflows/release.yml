@@ -87,36 +87,49 @@ jobs:
           EOF
 
           cat > release-current.md <<'EOF'
-          ## Booru Importer v3.26.14
+          ## Booru Importer v3.26.26
 
-          This release lowers SauceNAO's automatic-import threshold to a displayed **94.0%**.
+          This release restricts **metadata sources** to the four supported boorus while keeping SauceNAO enabled as a reverse-image-search provider.
 
-          ### SauceNAO confidence policy
+          ### Metadata source allowlist
 
-          - **94.0% and higher → automatic import**
-          - **85.0–93.9% → Multi-Booru Review**
-          - **Below 85.0% → non-qualifying SauceNAO result**
+          Only these sites may now supply metadata to Stash:
 
-          SauceNAO confidence is still normalized to the same one-decimal value shown in logs and the Review panel before thresholds are applied.
+          - **Danbooru**
+          - **Gelbooru**
+          - **Rule34**
+          - **e621**
 
-          Examples:
-          - Raw **93.96** → displayed **94.0%** → **HIGH** → automatic import
-          - Raw **93.94** → displayed **93.9%** → **Review**
-          - Displayed **94.0%** will no longer be written as a Review candidate.
+          SauceNAO still searches normally and can identify candidate images across its indexes, but results from Patreon, Twitter/X, Pixiv, Konachan, Yande.re, or any other external site are **search evidence only**. They cannot supply tags, Studio/artist data, Performers/characters, dates, titles, creators, or source URLs to an image.
 
-          ### Existing behavior retained
+          If SauceNAO finds a strong unsupported external result but no supported booru result, the image remains pending/retryable rather than importing metadata from that site or being turned into a false No Match.
 
-          - Review candidates still show the persisted SauceNAO confidence on the individual image page.
-          - **Yes — import this source** imports all normal metadata from that exact source.
-          - **No — mark No Match** removes the rejected candidate and writes `Multi-Booru No Match`.
-          - e621 pacing, SauceNAO outage handling, Retry Later safeguards, metadata preservation, Studio/artist mapping, and Performer/character mapping are unchanged.
-          - Stable internal package ID remains `DanbooruTagImporter`.
+          ### Review behavior
+
+          - New Review candidates are created only when SauceNAO resolves the candidate to Danbooru, Gelbooru, Rule34, or e621.
+          - Unsupported external URLs are no longer appended to images as Review source links.
+          - Legacy external Review links created by older releases can still be rejected with **No**.
+          - **Yes** refuses to import a legacy external Review candidate because only the four allowed boorus may provide metadata.
+
+          ### Plugin page
+
+          The Stash plugin manifest now includes the public repository link:
+
+          `https://github.com/purpsll/Booru-Tagger`
+
+          ### Unchanged behavior
+
+          SauceNAO remains enabled. Matching order, confidence thresholds, e621 pacing, SauceNAO rate/outage handling, Retry Later safeguards, metadata preservation, Studio/artist mapping, Performer/character mapping, and cleanup tools are unchanged from v3.26.25.
+
+          The stable internal package ID remains `DanbooruTagImporter`.
 
           ### Validation
 
-          - Full regression suite passes with **101 tests**.
-          - Tests verify displayed 94.0% is auto-imported and displayed 93.9% remains Review.
-          - Python compilation, JavaScript syntax, documentation checks, generated Stash feed, and release ZIP checks all pass.
+          - Full regression suite passes with **163 tests**.
+          - Direct tests verify high-confidence Patreon/Twitter/Konachan results cannot become metadata sources.
+          - A supported SauceNAO Danbooru result still resolves through Danbooru and imports normally.
+          - A Patreon Review-band result stays pending and does not append its URL to the Stash image.
+          - The final metadata-application path has a four-source allowlist guard as defense in depth.
 
           ### Update
 
@@ -124,11 +137,11 @@ jobs:
 
           `https://purpsll.github.io/Booru-Tagger/main/index.yml`
 
-          Existing source-based installs should show **Booru Importer 3.26.14** under **Installed Plugins → Update**.
+          Existing source-based installs should show **Booru Importer 3.26.26** under **Installed Plugins → Update**.
 
           ### Manual installation
 
-          Download **`Booru-Importer-v3.26.14.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
+          Download **`Booru-Importer-v3.26.26.zip`** from the release Assets, extract the top-level `DanbooruTagImporter` folder, and replace the files in your existing manual installation.
 
           EOF
 
