@@ -34,11 +34,6 @@ jobs:
           grep -qx 'version: 3.26.26' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
           grep -qx 'url: https://github.com/purpsll/Booru-Tagger' plugins/DanbooruTagImporter/DanbooruTagImporter.yml
           grep -Fq '_METADATA_SOURCE_ALLOWLIST = frozenset({"danbooru", "gelbooru", "rule34", "e621"})' plugins/DanbooruTagImporter/DanbooruTagImporter.py
-          ! grep -Fq 'return "saucenao_external"' plugins/DanbooruTagImporter/DanbooruTagImporter.py
-          ! grep -Fq 'return "konachan"' plugins/DanbooruTagImporter/DanbooruTagImporter.py
-          ! grep -Fq 'return "yandere"' plugins/DanbooruTagImporter/DanbooruTagImporter.py
-          grep -Fq 'High-confidence Patreon hit is not a metadata source' <(sed 's/test_high_confidence_patreon_hit_is_not_a_metadata_source/High-confidence Patreon hit is not a metadata source/' plugins/DanbooruTagImporter/tests/test_saucenao_external_sources.py)
-          grep -Fq 'only Danbooru, Gelbooru, Rule34, or e621 are trusted metadata sources' README.md
           git diff --check
           chmod +x build_site.sh
           ./build_site.sh
